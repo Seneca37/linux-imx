@@ -345,7 +345,7 @@ struct snd_soc_codec_device soc_spdif_codec_dev_mxs = {
 };
 EXPORT_SYMBOL_GPL(soc_spdif_codec_dev_mxs);
 
-static int __init mxs_spdif_probe(struct platform_device *pdev)
+static int __devinit mxs_spdif_probe(struct platform_device *pdev)
 {
 	struct snd_soc_codec *codec;
 	struct mxs_codec_priv *mxs_spdif;
