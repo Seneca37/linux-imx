@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010-2011 Freescale Semiconductor, Inc. All Rights Reserved.
+ * Copyright (C) 2010-2012 Freescale Semiconductor, Inc. All Rights Reserved.
  */
 
 /*
@@ -102,10 +102,12 @@
 #define EPDC_VCOM	(3*32 + 21)	/*GPIO_4_21 */
 #define EPDC_PWRSTAT	(2*32 + 28)	/*GPIO_3_28 */
 #define EPDC_ELCDIF_BACKLIGHT	(1*32 + 18)	/*GPIO_2_18 */
+#define EPDC_PWRCTRL0	(2*32 + 29)	/*GPIO_3_29 */
 #define CSPI_CS1	(3*32 + 13)	/*GPIO_4_13 */
 #define CSPI_CS2	(3*32 + 11) /*GPIO_4_11*/
 #define USB_OTG_PWR	(5*32 + 25) /*GPIO_6_25*/
 
+extern void __iomem *apll_base;
 extern int __init mx50_arm2_init_mc13892(void);
 extern struct cpu_wp *(*get_cpu_wp)(int *wp);
 extern void (*set_num_cpu_wp)(int num);
@@ -184,29 +186,9 @@ static iomux_v3_cfg_t  mx50_armadillo2[] = {
 	MX50_PAD_I2C3_SDA__I2C3_SDA,
 
 	/* EPDC pins */
-	MX50_PAD_EPDC_D0__EPDC_D0,
-	MX50_PAD_EPDC_D1__EPDC_D1,
-	MX50_PAD_EPDC_D2__EPDC_D2,
-	MX50_PAD_EPDC_D3__EPDC_D3,
-	MX50_PAD_EPDC_D4__EPDC_D4,
-	MX50_PAD_EPDC_D5__EPDC_D5,
-	MX50_PAD_EPDC_D6__EPDC_D6,
-	MX50_PAD_EPDC_D7__EPDC_D7,
-	MX50_PAD_EPDC_GDCLK__EPDC_GDCLK,
-	MX50_PAD_EPDC_GDSP__EPDC_GDSP,
-	MX50_PAD_EPDC_GDOE__EPDC_GDOE	,
-	MX50_PAD_EPDC_GDRL__EPDC_GDRL,
-	MX50_PAD_EPDC_SDCLK__EPDC_SDCLK,
-	MX50_PAD_EPDC_SDOE__EPDC_SDOE,
-	MX50_PAD_EPDC_SDLE__EPDC_SDLE,
-	MX50_PAD_EPDC_SDSHR__EPDC_SDSHR,
-	MX50_PAD_EPDC_BDR0__EPDC_BDR0,
-	MX50_PAD_EPDC_SDCE0__EPDC_SDCE0,
-	MX50_PAD_EPDC_SDCE1__EPDC_SDCE1,
-	MX50_PAD_EPDC_SDCE2__EPDC_SDCE2,
-
 	MX50_PAD_EPDC_PWRSTAT__GPIO_3_28,
 	MX50_PAD_EPDC_VCOM0__GPIO_4_21,
+	MX50_PAD_EPDC_PWRCTRL0__GPIO_3_29,
 
 	MX50_PAD_DISP_D8__DISP_D8,
 	MX50_PAD_DISP_D9__DISP_D9,
@@ -230,6 +212,9 @@ static iomux_v3_cfg_t  mx50_armadillo2[] = {
 
 	/* EPD PMIC intr */
 	MX50_PAD_UART4_RXD__GPIO_6_17,
+
+	/* EPD PMIC powerup */
+	MX50_PAD_EPDC_PWRCTRL0__GPIO_3_29,
 
 	MX50_PAD_EPITO__USBH1_PWR,
 	/* Need to comment below line if
@@ -414,8 +399,8 @@ static struct cpu_wp cpu_wp_auto[] = {
 	 .cpu_rate = 800000000,
 	 .pdf = 0,
 	 .mfi = 8,
-	 .mfd = 2,
-	 .mfn = 1,
+	 .mfd = 179,
+	 .mfn = 60,
 	 .cpu_podf = 0,
 	 .cpu_voltage = 1050000,},
 	{
@@ -427,7 +412,30 @@ static struct cpu_wp cpu_wp_auto[] = {
 	 .pll_rate = 800000000,
 	 .cpu_rate = 160000000,
 	 .cpu_podf = 4,
-	 .cpu_voltage = 850000,},
+	 .cpu_voltage = 900000,},
+};
+
+/* working point(wp): 0 - 1000MHz; 1 - 500MHz, 2 - 166MHz; */
+static struct cpu_wp fast_cpu_wp_auto[] = {
+	{
+	 .pll_rate = 1000000000,
+	 .cpu_rate = 1000000000,
+	 .pdf = 0,
+	 .mfi = 10,
+	 .mfd = 179,
+	 .mfn = 75,
+	 .cpu_podf = 0,
+	 .cpu_voltage = 1275000,},
+	{
+	 .pll_rate = 1000000000,
+	 .cpu_rate = 500000000,
+	 .cpu_podf = 1,
+	 .cpu_voltage = 1050000,},
+	{
+	 .pll_rate = 1000000000,
+	 .cpu_rate = 166666666,
+	 .cpu_podf = 5,
+	 .cpu_voltage = 900000,},
 };
 
 static struct dvfs_wp *mx50_arm2_get_dvfs_core_table(int *wp)
@@ -440,6 +448,12 @@ static struct cpu_wp *mx50_arm2_get_cpu_wp(int *wp)
 {
 	*wp = num_cpu_wp;
 	return cpu_wp_auto;
+}
+
+static struct cpu_wp *mx50_arm2_get_fast_cpu_wp(int *wp)
+{
+    *wp = num_cpu_wp;
+    return fast_cpu_wp_auto;
 }
 
 static void mx50_arm2_set_num_cpu_wp(int num)
@@ -553,7 +567,7 @@ static struct imxi2c_platform_data mxci2c_data = {
 #define V_to_uV(V) (mV_to_uV(V * 1000))
 #define uV_to_V(uV) (uV_to_mV(uV) / 1000)
 
-static struct regulator_init_data max17135_init_data[] __initdata = {
+static struct regulator_init_data max17135_init_data[] = {
 	{
 		.constraints = {
 			.name = "DISPLAY",
@@ -603,33 +617,41 @@ static struct regulator_init_data max17135_init_data[] __initdata = {
 			.min_uV = V_to_uV(15),
 			.max_uV = V_to_uV(15),
 		},
+	}, {
+		.constraints = {
+			.name = "V3P3",
+			.valid_ops_mask =  REGULATOR_CHANGE_STATUS,
+		},
 	},
 };
 
 static int epdc_get_pins(void)
 {
+	int ret = 0;
+
 	/* Claim GPIOs for EPDC pins - used during power up/down */
-	gpio_request(EPDC_D0, "epdc_d0");
-	gpio_request(EPDC_D1, "epdc_d1");
-	gpio_request(EPDC_D2, "epdc_d2");
-	gpio_request(EPDC_D3, "epdc_d3");
-	gpio_request(EPDC_D4, "epdc_d4");
-	gpio_request(EPDC_D5, "epdc_d5");
-	gpio_request(EPDC_D6, "epdc_d6");
-	gpio_request(EPDC_D7, "epdc_d7");
-	gpio_request(EPDC_GDCLK, "epdc_gdclk");
-	gpio_request(EPDC_GDSP, "epdc_gdsp");
-	gpio_request(EPDC_GDOE, "epdc_gdoe");
-	gpio_request(EPDC_GDRL, "epdc_gdrl");
-	gpio_request(EPDC_SDCLK, "epdc_sdclk");
-	gpio_request(EPDC_SDOE, "epdc_sdoe");
-	gpio_request(EPDC_SDLE, "epdc_sdle");
-	gpio_request(EPDC_SDSHR, "epdc_sdshr");
-	gpio_request(EPDC_BDR0, "epdc_bdr0");
-	gpio_request(EPDC_SDCE0, "epdc_sdce0");
-	gpio_request(EPDC_SDCE1, "epdc_sdce1");
-	gpio_request(EPDC_SDCE2, "epdc_sdce2");
-	return 0;
+	ret |= gpio_request(EPDC_D0, "epdc_d0");
+	ret |= gpio_request(EPDC_D1, "epdc_d1");
+	ret |= gpio_request(EPDC_D2, "epdc_d2");
+	ret |= gpio_request(EPDC_D3, "epdc_d3");
+	ret |= gpio_request(EPDC_D4, "epdc_d4");
+	ret |= gpio_request(EPDC_D5, "epdc_d5");
+	ret |= gpio_request(EPDC_D6, "epdc_d6");
+	ret |= gpio_request(EPDC_D7, "epdc_d7");
+	ret |= gpio_request(EPDC_GDCLK, "epdc_gdclk");
+	ret |= gpio_request(EPDC_GDSP, "epdc_gdsp");
+	ret |= gpio_request(EPDC_GDOE, "epdc_gdoe");
+	ret |= gpio_request(EPDC_GDRL, "epdc_gdrl");
+	ret |= gpio_request(EPDC_SDCLK, "epdc_sdclk");
+	ret |= gpio_request(EPDC_SDOE, "epdc_sdoe");
+	ret |= gpio_request(EPDC_SDLE, "epdc_sdle");
+	ret |= gpio_request(EPDC_SDSHR, "epdc_sdshr");
+	ret |= gpio_request(EPDC_BDR0, "epdc_bdr0");
+	ret |= gpio_request(EPDC_SDCE0, "epdc_sdce0");
+	ret |= gpio_request(EPDC_SDCE1, "epdc_sdce1");
+	ret |= gpio_request(EPDC_SDCE2, "epdc_sdce2");
+
+	return ret;
 }
 
 static void epdc_put_pins(void)
@@ -781,13 +803,13 @@ static struct fb_videomode e60_v220_mode = {
 	.refresh = 85,
 	.xres = 800,
 	.yres = 600,
-	.pixclock = 32000000,
+	.pixclock = 30000000,
 	.left_margin = 8,
-	.right_margin = 166,
+	.right_margin = 164,
 	.upper_margin = 4,
-	.lower_margin = 26,
-	.hsync_len = 20,
-	.vsync_len = 4,
+	.lower_margin = 8,
+	.hsync_len = 4,
+	.vsync_len = 1,
 	.sync = 0,
 	.vmode = FB_VMODE_NONINTERLACED,
 	.flag = 0,
@@ -831,10 +853,10 @@ static struct mxc_epdc_fb_mode panel_modes[] = {
 		20,	/* sdoed_delay */
 		10,	/* sdoez_width */
 		20,	/* sdoez_delay */
-		428,	/* gdclk_hp_offs */
+		465,	/* gdclk_hp_offs */
 		20,	/* gdsp_offs */
 		0,	/* gdoe_offs */
-		1,	/* gdclk_offs */
+		9,	/* gdclk_offs */
 		1,	/* num_ce */
 	},
 	{
@@ -878,6 +900,7 @@ static struct max17135_platform_data max17135_pdata __initdata = {
 	.gpio_pmic_pwrgood = EPDC_PWRSTAT,
 	.gpio_pmic_vcom_ctrl = EPDC_VCOM,
 	.gpio_pmic_wakeup = EPDC_PMIC_WAKE,
+	.gpio_pmic_v3p3 = EPDC_PWRCTRL0,
 	.gpio_pmic_intr = EPDC_PMIC_INT,
 	.regulator_init = max17135_init_data,
 	.init = max17135_regulator_init,
@@ -903,12 +926,13 @@ static int __init max17135_regulator_init(struct max17135 *max17135)
 	max17135->gpio_pmic_pwrgood = pdata->gpio_pmic_pwrgood;
 	max17135->gpio_pmic_vcom_ctrl = pdata->gpio_pmic_vcom_ctrl;
 	max17135->gpio_pmic_wakeup = pdata->gpio_pmic_wakeup;
+	max17135->gpio_pmic_v3p3 = pdata->gpio_pmic_v3p3;
 	max17135->gpio_pmic_intr = pdata->gpio_pmic_intr;
 
 	max17135->vcom_setup = false;
 	max17135->init_done = false;
 
-	for (i = 0; i <= MAX17135_VPOS; i++) {
+	for (i = 0; i < MAX17135_NUM_REGULATORS; i++) {
 		ret = max17135_register_regulator(max17135, i,
 			&pdata->regulator_init[i]);
 		if (ret != 0) {
@@ -1191,6 +1215,16 @@ static void mx50_suspend_enter()
 {
 	iomux_v3_cfg_t *p = suspend_enter_pads;
 	int i;
+
+	/*
+	 * Clear the SELF_BIAS bit and power down
+	 * the band-gap.
+	 */
+	__raw_writel(MXC_ANADIG_REF_SELFBIAS_OFF,
+		apll_base + MXC_ANADIG_MISC_CLR);
+	__raw_writel(MXC_ANADIG_REF_PWD,
+		apll_base + MXC_ANADIG_MISC_SET);
+
 	/* Set PADCTRL to 0 for all IOMUX. */
 	for (i = 0; i < ARRAY_SIZE(suspend_enter_pads); i++) {
 		suspend_exit_pads[i] = *p;
@@ -1205,6 +1239,13 @@ static void mx50_suspend_enter()
 
 static void mx50_suspend_exit()
 {
+	/* Power Up the band-gap and set the SELFBIAS bit. */
+	__raw_writel(MXC_ANADIG_REF_PWD,
+		apll_base + MXC_ANADIG_MISC_CLR);
+	udelay(100);
+	__raw_writel(MXC_ANADIG_REF_SELFBIAS_OFF,
+		apll_base + MXC_ANADIG_MISC_SET);
+
 	mxc_iomux_v3_setup_multiple_pads(suspend_exit_pads,
 			ARRAY_SIZE(suspend_exit_pads));
 }
@@ -1228,12 +1269,30 @@ static struct mxc_pm_platform_data mx50_pm_data = {
 static void __init fixup_mxc_board(struct machine_desc *desc, struct tag *tags,
 				   char **cmdline, struct meminfo *mi)
 {
+	struct tag *t;
+	char *str;
+	int capable_to_1GHz = 0;
+
 	mxc_set_cpu_type(MXC_CPU_MX50);
 
-	get_cpu_wp = mx50_arm2_get_cpu_wp;
+	for_each_tag(t, tags) {
+		if (t->hdr.tag == ATAG_CMDLINE) {
+			str = t->u.cmdline.cmdline;
+			if (str != NULL && strstr(str, "mx50_1GHz") != NULL) {
+				capable_to_1GHz = 1;
+			}
+		}
+	}
+
+	if (capable_to_1GHz) {
+		get_cpu_wp = mx50_arm2_get_fast_cpu_wp;
+		num_cpu_wp = ARRAY_SIZE(fast_cpu_wp_auto);
+	} else {
+		get_cpu_wp = mx50_arm2_get_cpu_wp;
+		num_cpu_wp = ARRAY_SIZE(cpu_wp_auto);
+	}
 	set_num_cpu_wp = mx50_arm2_set_num_cpu_wp;
 	get_dvfs_core_wp = mx50_arm2_get_dvfs_core_table;
-	num_cpu_wp = ARRAY_SIZE(cpu_wp_auto);
 }
 
 static void __init mx50_arm2_io_init(void)
@@ -1270,6 +1329,9 @@ static void __init mx50_arm2_io_init(void)
 
 	gpio_request(EPDC_VCOM, "epdc-vcom");
 	gpio_direction_output(EPDC_VCOM, 0);
+
+	gpio_request(EPDC_PWRCTRL0, "epdc-powerup");
+	gpio_direction_output(EPDC_PWRCTRL0, 0);
 
 	gpio_request(EPDC_PMIC_INT, "epdc-pmic-int");
 	gpio_direction_input(EPDC_PMIC_INT);

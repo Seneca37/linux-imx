@@ -480,6 +480,9 @@ static ssize_t __init da9052_tsi_create_input_dev(struct input_dev **ip_dev,
 			BIT_MASK(EV_KEY) |
 			BIT_MASK(EV_ABS));
 
+	__set_bit(ABS_X, dev->absbit);
+	__set_bit(ABS_Y, dev->absbit);
+	__set_bit(ABS_PRESSURE, dev->absbit);
 	input_set_abs_params(dev, ABS_X, 0, DA9052_DISPLAY_X_MAX, 0, 0);
 	input_set_abs_params(dev, ABS_Y, 0, DA9052_DISPLAY_Y_MAX, 0, 0);
 	input_set_abs_params(dev, ABS_PRESSURE, 0, DA9052_TOUCH_PRESSURE_MAX,
@@ -539,18 +542,6 @@ static ssize_t __init da9052_tsi_init_drv(struct da9052_ts_priv *priv)
 	}
 
 	da9052_init_tsi_fifos(priv);
-
-	init_completion(&priv->tsi_reg_proc_thread.notifier);
-	priv->tsi_reg_proc_thread.state = ACTIVE;
-	priv->tsi_reg_proc_thread.pid =
-				kernel_thread(da9052_tsi_reg_proc_thread,
-					priv, CLONE_KERNEL | SIGCHLD);
-
-	init_completion(&priv->tsi_raw_proc_thread.notifier);
-	priv->tsi_raw_proc_thread.state = ACTIVE;
-	priv->tsi_raw_proc_thread.pid =
-				kernel_thread(da9052_tsi_raw_proc_thread,
-					priv, CLONE_KERNEL | SIGCHLD);
 
 	ret = da9052_tsi_config_state(priv, DEFAULT_TSI_STATE);
 	if (ret) {
@@ -1156,10 +1147,13 @@ static void da9052_tsi_penup_event(struct da9052_ts_priv *priv)
 	priv->early_data_flag = TRUE;
 	priv->debounce_over = FALSE;
 	priv->win_reference_valid = FALSE;
+	priv->tsi_reg_proc_thread.state = INACTIVE;
+	priv->tsi_raw_proc_thread.state = INACTIVE;
 
-	printk(KERN_INFO "The raw data count is %d \n", priv->raw_data_cnt);
-	printk(KERN_INFO "The OS data count is %d \n", priv->os_data_cnt);
-	printk(KERN_INFO "PEN UP DECLARED \n");
+	printk(KERN_DEBUG "The raw data count is %d\n", priv->raw_data_cnt);
+	printk(KERN_DEBUG "The OS data count is %d\n", priv->os_data_cnt);
+	printk(KERN_DEBUG "PEN UP DECLARED\n");
+	input_report_abs(ip_dev, ABS_PRESSURE, 0);
 	input_report_abs(ip_dev, BTN_TOUCH, 0);
 	input_sync(ip_dev);
 	priv->os_data_cnt = 0;
@@ -1214,6 +1208,25 @@ void da9052_tsi_pen_down_handler(struct da9052_eh_nb *eh_data, u32 event)
 
 	tsi_reg.tsi_state =  SAMPLING_ACTIVE;
 
+	init_completion(&priv->tsi_reg_proc_thread.notifier);
+	priv->tsi_reg_proc_thread.state = ACTIVE;
+	priv->tsi_reg_proc_thread.thread_task =
+	kthread_run(da9052_tsi_reg_proc_thread, (void *)priv, "da9052_tsi_reg");
+	if (IS_ERR(priv->tsi_reg_proc_thread.thread_task)) {
+		printk(KERN_ERR "da9052: failed to create kthread tsi_reg");
+		priv->tsi_reg_proc_thread.thread_task = NULL;
+		goto fail;
+	}
+
+	init_completion(&priv->tsi_raw_proc_thread.notifier);
+	priv->tsi_raw_proc_thread.state = ACTIVE;
+	priv->tsi_raw_proc_thread.thread_task =
+	kthread_run(da9052_tsi_raw_proc_thread, (void *)priv, "da9052_tsi_raw");
+	if (IS_ERR(priv->tsi_raw_proc_thread.thread_task)) {
+		printk(KERN_ERR "da9052: failed to create kthread tsi_raw");
+		priv->tsi_raw_proc_thread.thread_task = NULL;
+		goto fail;
+	}
 	goto success;
 
 fail:
@@ -1229,7 +1242,7 @@ fail:
 
 success:
 	ret = 0;
-	printk(KERN_INFO "Exiting PEN DOWN HANDLER \n");
+	printk(KERN_DEBUG "Exiting PEN DOWN HANDLER\n");
 }
 
 void da9052_tsi_data_ready_handler(struct da9052_eh_nb *eh_data, u32 event)
@@ -1341,6 +1354,10 @@ static s32 da9052_tsi_get_rawdata(struct da9052_tsi_reg *buf, u8 cnt) {
 static ssize_t da9052_tsi_suspend(struct platform_device *dev, 
 							pm_message_t state)
 {
+	struct da9052_ts_priv *priv = platform_get_drvdata(dev);
+
+	priv->tsi_reg_proc_thread.state = INACTIVE;
+	priv->tsi_raw_proc_thread.state = INACTIVE;
 	printk(KERN_INFO "%s: called\n", __FUNCTION__);
 	return 0;
 }

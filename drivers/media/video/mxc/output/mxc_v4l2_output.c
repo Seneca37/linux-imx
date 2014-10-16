@@ -1,5 +1,5 @@
 /*
- * Copyright 2005-2011 Freescale Semiconductor, Inc. All Rights Reserved.
+ * Copyright 2005-2013 Freescale Semiconductor, Inc. All Rights Reserved.
  */
 
 /*
@@ -42,6 +42,8 @@
 				   ((vout)->field_fmt == V4L2_FIELD_INTERLACED_BT)))
 #define LOAD_3FIELDS(vout) ((INTERLACED_CONTENT(vout)) && \
 			    ((vout)->motion_sel != HIGH_MOTION))
+#define SWITCH_BUF_TOUT_NSEC	(100000000)
+#define NSEC_PER_FRAME_30FPS		(33333333)
 
 struct v4l2_output mxc_outputs[1] = {
 	{
@@ -100,29 +102,17 @@ static __inline int peek_next_buf(v4l_queue *q)
 	return q->list[q->head];
 }
 
-static __inline unsigned long get_jiffies(struct timeval *t)
+static inline int regularize_timeval(struct timeval *t)
 {
-	struct timeval cur;
+	if (t->tv_sec < 0 || t->tv_usec < 0)
+		return -1;
 
-	if (t->tv_usec >= 1000000) {
-		t->tv_sec += t->tv_usec / 1000000;
-		t->tv_usec = t->tv_usec % 1000000;
+	if (t->tv_usec >= USEC_PER_SEC) {
+		t->tv_sec += t->tv_usec / USEC_PER_SEC;
+		t->tv_usec = t->tv_usec % USEC_PER_SEC;
 	}
 
-	do_gettimeofday(&cur);
-	if ((t->tv_sec < cur.tv_sec)
-	    || ((t->tv_sec == cur.tv_sec) && (t->tv_usec < cur.tv_usec)))
-		return jiffies;
-
-	if (t->tv_usec < cur.tv_usec) {
-		cur.tv_sec = t->tv_sec - cur.tv_sec - 1;
-		cur.tv_usec = t->tv_usec + 1000000 - cur.tv_usec;
-	} else {
-		cur.tv_sec = t->tv_sec - cur.tv_sec;
-		cur.tv_usec = t->tv_usec - cur.tv_usec;
-	}
-
-	return jiffies + timeval_to_jiffies(&cur);
+	return 0;
 }
 
 /*!
@@ -258,85 +248,51 @@ static int select_display_buffer(vout_data *vout, int next_buf)
 
 static void setup_next_buf_timer(vout_data *vout, int index)
 {
-	unsigned long timeout;
+	ktime_t expiry_time, now;
+	struct v4l2_buffer buf = vout->v4l2_bufs[index];
+	struct timeval ts = buf.timestamp;
+	int ret = 0;
 
 	/* Setup timer for next buffer */
 	/* if timestamp is 0, then default to 30fps */
-	if ((vout->v4l2_bufs[index].timestamp.tv_sec == 0)
-			&& (vout->v4l2_bufs[index].timestamp.tv_usec == 0)
-			&& vout->start_jiffies)
-		timeout =
-			vout->start_jiffies + vout->frame_count * HZ / 30;
-	else
-		timeout =
-			get_jiffies(&vout->v4l2_bufs[index].timestamp);
+	if (ts.tv_sec == 0 && ts.tv_usec == 0) {
+		expiry_time = ktime_add_ns(vout->start_ktime,
+				NSEC_PER_FRAME_30FPS * vout->frame_count);
+	} else {
+		ret = regularize_timeval(&ts);
+		if (ret < 0) {
+			ret = dequeue_buf(&vout->ready_q);
+			WARN_ON(ret < 0);
 
-	if (jiffies >= timeout) {
+			buf.flags = V4L2_BUF_FLAG_DONE;
+			queue_buf(&vout->done_q, index);
+			wake_up_interruptible(&vout->v4l_bufq);
+
+			vout->state = STATE_STREAM_PAUSED;
+
+			dev_warn(&vout->video_dev->dev, "invalid timestamp "
+				 "@%ldsec%ldusec\n", ts.tv_sec, ts.tv_usec);
+			return;
+		}
+
+		expiry_time = timeval_to_ktime(ts);
+	}
+
+	now = hrtimer_cb_get_time(&vout->output_timer);
+	if ((now.tv.sec > expiry_time.tv.sec) ||
+	    (now.tv.sec == expiry_time.tv.sec &&
+	     now.tv.nsec > expiry_time.tv.nsec)) {
 		dev_dbg(&vout->video_dev->dev,
 				"warning: timer timeout already expired.\n");
+		expiry_time = now;
 	}
-	if (mod_timer(&vout->output_timer, timeout))
-		dev_dbg(&vout->video_dev->dev,
-				"warning: timer was already set\n");
+
+	hrtimer_start(&vout->output_timer, expiry_time, HRTIMER_MODE_ABS);
 
 	dev_dbg(&vout->video_dev->dev,
-			"timer handler next schedule: %lu\n", timeout);
-}
-
-static int finish_previous_frame(vout_data *vout)
-{
-	struct fb_info *fbi =
-		registered_fb[vout->output_fb_num[vout->cur_disp_output]];
-	mm_segment_t old_fs;
-	int ret = 0, try = 0;
-
-	/* make sure buf[vout->disp_buf_num] in showing */
-	while (ipu_check_buffer_ready(vout->display_ch,
-			IPU_INPUT_BUFFER, vout->disp_buf_num)) {
-		if (fbi->fbops->fb_ioctl) {
-			old_fs = get_fs();
-			set_fs(KERNEL_DS);
-			ret = fbi->fbops->fb_ioctl(fbi, MXCFB_WAIT_FOR_VSYNC,
-					(unsigned int)NULL);
-			set_fs(old_fs);
-
-			if ((ret < 0) || (try == 1)) {
-				/*
-				 * ic_bypass need clear display buffer ready for next update.
-				 * when fb doing blank and unblank, it has chance to go into
-				 * dead loop: fb unblank just after buffer 1 ready selected.
-				 */
-				ipu_clear_buffer_ready(vout->display_ch, IPU_INPUT_BUFFER,
-						vout->disp_buf_num);
-			}
-		}
-		try++;
-	}
-
-	return ret;
-}
-
-static int show_current_frame(vout_data *vout)
-{
-	struct fb_info *fbi =
-		registered_fb[vout->output_fb_num[vout->cur_disp_output]];
-	mm_segment_t old_fs;
-	int ret = 0;
-
-	/* make sure buf[vout->disp_buf_num] begin to show */
-	if (ipu_get_cur_buffer_idx(vout->display_ch, IPU_INPUT_BUFFER)
-		!= vout->disp_buf_num) {
-		/* wait for display frame finish */
-		if (fbi->fbops->fb_ioctl) {
-			old_fs = get_fs();
-			set_fs(KERNEL_DS);
-			ret = fbi->fbops->fb_ioctl(fbi, MXCFB_WAIT_FOR_VSYNC,
-					(unsigned int)NULL);
-			set_fs(old_fs);
-		}
-	}
-
-	return ret;
+		"timer handler next schedule: %d.%03ld%03ldsecs\n",
+		expiry_time.tv.sec, expiry_time.tv.nsec / NSEC_PER_MSEC,
+		(expiry_time.tv.nsec % NSEC_PER_MSEC) / NSEC_PER_USEC);
 }
 
 static void icbypass_work_func(struct work_struct *work)
@@ -345,9 +301,10 @@ static void icbypass_work_func(struct work_struct *work)
 		container_of(work, vout_data, icbypass_work);
 	int index, ret;
 	int last_buf;
+	int two_bufs_ready = 1;
+	int ready_cnt = 0;
 	unsigned long lock_flags = 0;
-
-	finish_previous_frame(vout);
+	struct timespec start_ts, current_ts, tout;
 
 	spin_lock_irqsave(&g_lock, lock_flags);
 
@@ -361,6 +318,38 @@ static void icbypass_work_func(struct work_struct *work)
 	vout->frame_count++;
 
 	vout->ipu_buf[vout->next_rdy_ipu_buf] = index;
+	getnstimeofday(&start_ts);
+	while (two_bufs_ready) {
+		getnstimeofday(&current_ts);
+		tout = timespec_sub(current_ts, start_ts);
+		if (timespec_to_ns(&tout) >= SWITCH_BUF_TOUT_NSEC) {
+			dev_err(&vout->video_dev->dev,
+				"switch buf for icbypass case timeout\n");
+			ipu_clear_buffer_ready(vout->display_ch,
+					       IPU_INPUT_BUFFER, 0);
+			ipu_clear_buffer_ready(vout->display_ch,
+					       IPU_INPUT_BUFFER, 1);
+			ipu_clear_buffer_ready(vout->display_ch,
+					       IPU_INPUT_BUFFER, 2);
+			break;
+		}
+
+		ready_cnt = ipu_check_buffer_ready(vout->display_ch,
+							    IPU_INPUT_BUFFER,
+							    0);
+		ready_cnt += ipu_check_buffer_ready(vout->display_ch,
+							    IPU_INPUT_BUFFER,
+							    1);
+		ready_cnt += ipu_check_buffer_ready(vout->display_ch,
+							    IPU_INPUT_BUFFER,
+							    2);
+		if (ready_cnt < 2)
+			two_bufs_ready = 0;
+		else
+			dev_dbg(&vout->video_dev->dev,
+				"%d buffers are ready for icbypass case\n",
+				ready_cnt);
+	}
 	ret = ipu_update_channel_buffer(vout->display_ch, IPU_INPUT_BUFFER,
 			vout->next_rdy_ipu_buf,
 			vout->v4l2_bufs[index].m.offset);
@@ -371,33 +360,30 @@ static void icbypass_work_func(struct work_struct *work)
 				vout->next_rdy_ipu_buf, ret);
 		goto exit;
 	}
-	spin_unlock_irqrestore(&g_lock, lock_flags);
-	show_current_frame(vout);
-	spin_lock_irqsave(&g_lock, lock_flags);
-	vout->next_rdy_ipu_buf = !vout->next_rdy_ipu_buf;
+	vout->next_rdy_ipu_buf = (vout->next_rdy_ipu_buf + 1) % 3;
 
 	last_buf = vout->ipu_buf[vout->next_done_ipu_buf];
-	if (last_buf != -1) {
+	/* make sure a buffer can be dqueued to user */
+	if (last_buf != -1 && vout->frame_count > 2) {
 		g_buf_output_cnt++;
 		vout->v4l2_bufs[last_buf].flags = V4L2_BUF_FLAG_DONE;
 		queue_buf(&vout->done_q, last_buf);
 		wake_up_interruptible(&vout->v4l_bufq);
 		vout->ipu_buf[vout->next_done_ipu_buf] = -1;
-		vout->next_done_ipu_buf = !vout->next_done_ipu_buf;
+		vout->next_done_ipu_buf = (vout->next_done_ipu_buf + 1) % 3;
 	}
 
-	if (g_buf_output_cnt > 0) {
-		/* Setup timer for next buffer */
-		index = peek_next_buf(&vout->ready_q);
-		if (index != -1)
-			setup_next_buf_timer(vout, index);
-		else
-			vout->state = STATE_STREAM_PAUSED;
+	/* Setup timer for next buffer */
+	index = peek_next_buf(&vout->ready_q);
+	if (index != -1)
+		setup_next_buf_timer(vout, index);
+	else
+		vout->state = STATE_STREAM_PAUSED;
 
-		if (vout->state == STATE_STREAM_STOPPING) {
-			if ((vout->ipu_buf[0] == -1) && (vout->ipu_buf[1] == -1)) {
-				vout->state = STATE_STREAM_OFF;
-			}
+	if (vout->state == STATE_STREAM_STOPPING) {
+		if ((vout->ipu_buf[0] == -1) && (vout->ipu_buf[1] == -1) &&
+		    (vout->ipu_buf[2] == -1)) {
+			vout->state = STATE_STREAM_OFF;
 		}
 	}
 exit:
@@ -449,11 +435,11 @@ static int get_cur_fb_blank(vout_data *vout)
 	return ret;
 }
 
-static void mxc_v4l2out_timer_handler(unsigned long arg)
+static enum hrtimer_restart mxc_v4l2out_timer_handler(struct hrtimer *timer)
 {
 	int index, ret;
 	unsigned long lock_flags = 0;
-	vout_data *vout = (vout_data *) arg;
+	vout_data *vout = container_of(timer, vout_data, output_timer);
 	static int old_fb_blank = FB_BLANK_UNBLANK;
 
 	spin_lock_irqsave(&g_lock, lock_flags);
@@ -610,13 +596,9 @@ static void mxc_v4l2out_timer_handler(unsigned long arg)
 			vout->state = STATE_STREAM_OFF;
 		}
 	}
-
-	spin_unlock_irqrestore(&g_lock, lock_flags);
-
-	return;
-
 exit0:
 	spin_unlock_irqrestore(&g_lock, lock_flags);
+	return HRTIMER_NORESTART;
 }
 
 static irqreturn_t mxc_v4l2out_work_irq_handler(int irq, void *dev_id)
@@ -1247,7 +1229,7 @@ static int mxc_v4l2out_streamon(vout_data *vout)
 	mm_segment_t old_fs;
 	unsigned int ipu_ch = CHAN_NONE;
 	unsigned int fb_fmt;
-	int rc = 0;
+	int rc = 0, index = 0;
 
 	dev_dbg(dev, "mxc_v4l2out_streamon: field format=%d\n",
 		vout->field_fmt);
@@ -1309,6 +1291,7 @@ static int mxc_v4l2out_streamon(vout_data *vout)
 				vout->pp_split = 3; /*2 vertical stripes*/
 		} else {
 			vout->ipu_buf[1] = -1;
+			vout->ipu_buf[2] = -1;
 			vout->frame_count = 1;
 		}
 	} else if (!LOAD_3FIELDS(vout)) {
@@ -1378,9 +1361,8 @@ static int mxc_v4l2out_streamon(vout_data *vout)
 	}
 
 #ifdef CONFIG_MXC_IPU_V1
-	/* IPUv1 needs IC to do CSC */
-	if (format_is_yuv(vout->v2f.fmt.pix.pixelformat) !=
-	    format_is_yuv(bpp_to_fmt(fbi)))
+	/* Don't support icbypass for IPUv1 */
+	vout->ic_bypass = 0;
 #else
 	/* DC channel needs IC to do CSC */
 	if ((format_is_yuv(vout->v2f.fmt.pix.pixelformat) !=
@@ -1425,7 +1407,8 @@ static int mxc_v4l2out_streamon(vout_data *vout)
 
 	/* Init display channel through fb API */
 	fbvar.yoffset = 0;
-	fbvar.accel_flags = FB_ACCEL_DOUBLE_FLAG;
+	fbvar.accel_flags = vout->ic_bypass ?
+			FB_ACCEL_TRIPLE_FLAG : FB_ACCEL_DOUBLE_FLAG;
 	fbvar.activate |= FB_ACTIVATE_FORCE;
 	acquire_console_sem();
 	fbi->flags |= FBINFO_MISC_USEREVENT;
@@ -1596,15 +1579,22 @@ static int mxc_v4l2out_streamon(vout_data *vout)
 					0,
 					0);
 		ipu_select_buffer(vout->display_ch, IPU_INPUT_BUFFER, 0);
-		queue_work(vout->v4l_wq, &vout->icbypass_work);
+
+		index = peek_next_buf(&vout->ready_q);
+		if (index != -1)
+			setup_next_buf_timer(vout, index);
+		else
+			vout->state = STATE_STREAM_PAUSED;
 	}
 
-	vout->start_jiffies = jiffies;
+	vout->start_ktime = hrtimer_cb_get_time(&vout->output_timer);
 
 	msleep(1);
 
-	dev_dbg(dev,
-		"streamon: start time = %lu jiffies\n", vout->start_jiffies);
+	dev_dbg(dev, "streamon: start time = %d.%03ld%03ldsecs\n",
+		vout->start_ktime.tv.sec,
+		vout->start_ktime.tv.nsec / NSEC_PER_MSEC,
+		(vout->start_ktime.tv.nsec % NSEC_PER_MSEC) / NSEC_PER_USEC);
 
 	return 0;
 }
@@ -1681,7 +1671,7 @@ static int mxc_v4l2out_streamoff(vout_data *vout)
 
 	spin_lock_irqsave(&g_lock, lockflag);
 
-	del_timer(&vout->output_timer);
+	hrtimer_cancel(&vout->output_timer);
 
 	if (vout->state == STATE_STREAM_ON) {
 		vout->state = STATE_STREAM_STOPPING;
@@ -2038,9 +2028,9 @@ static int mxc_v4l2out_open(struct file *file)
 	if (vout->open_count++ == 0) {
 		init_waitqueue_head(&vout->v4l_bufq);
 
-		init_timer(&vout->output_timer);
+		hrtimer_init(&vout->output_timer, CLOCK_REALTIME,
+				HRTIMER_MODE_ABS);
 		vout->output_timer.function = mxc_v4l2out_timer_handler;
-		vout->output_timer.data = (unsigned long)vout;
 
 		vout->state = STATE_STREAM_OFF;
 		vout->rotate = IPU_ROTATE_NONE;

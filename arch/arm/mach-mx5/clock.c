@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2008-2011 Freescale Semiconductor, Inc. All Rights Reserved.
+ * Copyright (C) 2008-2012 Freescale Semiconductor, Inc. All Rights Reserved.
  */
 
 /*
@@ -74,6 +74,7 @@ static int max_ahb_clk;
 static int max_emi_slow_clk;
 extern int dvfs_core_is_active;
 
+DEFINE_SPINLOCK(mx5_clk_lock);
 #define SPIN_DELAY	1000000 /* in nanoseconds */
 #define MAX_AXI_A_CLK_MX51 	166250000
 #define MAX_AXI_A_CLK_MX53 	400000000
@@ -1281,36 +1282,18 @@ static struct clk ipg_perclk = {
 	.flags = RATE_PROPAGATES,
 };
 
-static int _clk_ipmux_enable(struct clk *clk)
-{
-	u32 reg;
-	reg = __raw_readl(clk->enable_reg);
-	reg |= 1  << clk->enable_shift;
-	__raw_writel(reg, clk->enable_reg);
-
-	return 0;
-}
-
-static void _clk_ipmux_disable(struct clk *clk)
-{
-	u32 reg;
-	reg = __raw_readl(clk->enable_reg);
-	reg &= ~(0x1 << clk->enable_shift);
-	__raw_writel(reg, clk->enable_reg);
-}
-
 static struct clk ipumux1_clk = {
 	.enable_reg = MXC_CCM_CCGR5,
 	.enable_shift = MXC_CCM_CCGR5_CG6_1_OFFSET,
-	.enable = _clk_ipmux_enable,
-	.disable = _clk_ipmux_disable,
+	.enable = _clk_enable,
+	.disable = _clk_disable_inwait,
 };
 
 static struct clk ipumux2_clk = {
 	.enable_reg = MXC_CCM_CCGR5,
 	.enable_shift = MXC_CCM_CCGR5_CG6_2_OFFSET,
-	.enable = _clk_ipmux_enable,
-	.disable = _clk_ipmux_disable,
+	.enable = _clk_enable,
+	.disable = _clk_disable_inwait,
 };
 
 static int _clk_ocram_enable(struct clk *clk)
@@ -1341,17 +1324,27 @@ static struct clk aips_tz1_clk[] = {
 	},
 	{
 	 .parent = &emi_fast_clk,
-	 .secondary = &ahb_max_clk,
+	 .secondary = &aips_tz1_clk[2],
+	},
+	{
+	 .parent = &ahb_max_clk,
+	 .secondary = &ipumux1_clk,
 	},
 };
 
-static struct clk aips_tz2_clk = {
-	.parent = &ahb_clk,
-	.secondary = &ahb_max_clk,
-	.enable_reg = MXC_CCM_CCGR0,
-	.enable_shift = MXC_CCM_CCGRx_CG13_OFFSET,
-	.enable = _clk_enable,
-	.disable = _clk_disable_inwait,
+static struct clk aips_tz2_clk[] = {
+	{
+	 .parent = &ahb_clk,
+	 .secondary = &aips_tz2_clk[1],
+	 .enable_reg = MXC_CCM_CCGR0,
+	 .enable_shift = MXC_CCM_CCGRx_CG13_OFFSET,
+	 .enable = _clk_enable,
+	 .disable = _clk_disable_inwait,
+	},
+	{
+	 .parent = &ahb_max_clk,
+	 .secondary = &ipumux2_clk,
+	},
 };
 
 static struct clk gpc_dvfs_clk = {
@@ -2426,7 +2419,7 @@ static struct clk cspi2_clk[] = {
 	{
 	 .id = 1,
 	 .parent = &ipg_clk,
-	 .secondary = &aips_tz2_clk,
+	 .secondary = &aips_tz2_clk[0],
 	 .enable_reg = MXC_CCM_CCGR4,
 	 .enable_shift = MXC_CCM_CCGRx_CG11_OFFSET,
 	 .enable = _clk_enable_inrun, /*Active only when ARM is running. */
@@ -2441,7 +2434,7 @@ static struct clk cspi3_clk = {
 	.enable_shift = MXC_CCM_CCGRx_CG13_OFFSET,
 	.enable = _clk_enable,
 	.disable = _clk_disable,
-	.secondary = &aips_tz2_clk,
+	.secondary = &aips_tz2_clk[0],
 };
 
 static unsigned long _clk_ieee_rtc_get_rate(struct clk *clk)
@@ -2587,7 +2580,7 @@ static struct clk ssi1_clk[] = {
 	 },
 	{
 	 .id = 0,
-	 .parent = &aips_tz2_clk,
+	 .parent = &aips_tz2_clk[0],
 #ifdef CONFIG_SND_MXC_SOC_IRAM
 	 .secondary = &emi_intr_clk[0],
 #else
@@ -2698,7 +2691,7 @@ static struct clk ssi3_clk[] = {
 	 },
 	{
 	 .id = 2,
-	 .parent = &aips_tz2_clk,
+	 .parent = &aips_tz2_clk[0],
 #ifdef CONFIG_SND_MXC_SOC_IRAM
 	 .secondary = &emi_intr_clk[0],
 #else
@@ -2911,6 +2904,7 @@ static struct clk esai_clk[] = {
 	{
 	 .id = 0,
 	 .parent = &ipg_clk,
+	 .secondary = &spba_clk,
 	 .enable_reg = MXC_CCM_CCGR6,
 	 .enable_shift = MXC_CCM_CCGRx_CG8_OFFSET,
 	 .enable = _clk_enable,
@@ -2920,7 +2914,7 @@ static struct clk esai_clk[] = {
 
 static struct clk iim_clk = {
 	.parent = &ipg_clk,
-	.secondary = &aips_tz2_clk,
+	.secondary = &aips_tz2_clk[0],
 	.enable = _clk_enable,
 	.enable_reg = MXC_CCM_CCGR0,
 	.enable_shift = MXC_CCM_CCGRx_CG15_OFFSET,
@@ -3720,6 +3714,7 @@ static struct clk spdif0_clk[] = {
 	{
 	.id = 0,
 	.parent = &pll3_sw_clk,
+	.secondary = &spdif0_clk[1],
 	.set_parent = _clk_spdif0_set_parent,
 	.get_rate = _clk_spdif0_get_rate,
 	.enable = _clk_enable,
@@ -3777,6 +3772,7 @@ static struct clk spdif1_clk[] = {
 	{
 	.id = 1,
 	.parent = &pll3_sw_clk,
+	.secondary = &spdif1_clk[1],
 	.set_parent = _clk_spdif1_set_parent,
 	.get_rate = _clk_spdif1_get_rate,
 	.enable = _clk_enable,
@@ -3979,7 +3975,7 @@ static struct clk fec_clk[] = {
 	 .secondary = &fec_clk[2],
 	},
 	{
-	 .parent = &aips_tz2_clk,
+	 .parent = &aips_tz2_clk[0],
 	 .secondary = &emi_fast_clk,
 	},
 };
@@ -4268,6 +4264,7 @@ static struct clk asrc_clk[] = {
 	{
 	.id = 0,
 	.parent = &ipg_clk,
+	.secondary = &spba_clk,
 	.enable_reg = MXC_CCM_CCGR7,
 	.enable_shift = MXC_CCM_CCGRx_CG0_OFFSET,
 	.enable = _clk_enable,
@@ -4768,6 +4765,10 @@ int __init mx51_clocks_init(unsigned long ckil, unsigned long osc, unsigned long
 
 	base = ioremap(GPT1_BASE_ADDR, SZ_4K);
 	mxc_timer_init(&gpt_clk[0], base, MXC_INT_GPT);
+
+	lp_med_freq = 0;
+	lp_high_freq = 0;
+
 	return 0;
 }
 
@@ -5034,6 +5035,10 @@ int __init mx53_clocks_init(unsigned long ckil, unsigned long osc, unsigned long
 			1190000));
 	base = ioremap(MX53_BASE_ADDR(GPT1_BASE_ADDR), SZ_4K);
 	mxc_timer_init(&gpt_clk[0], base, MXC_INT_GPT);
+
+	lp_med_freq = 0;
+	lp_high_freq = 0;
+
 	return 0;
 }
 
@@ -5047,6 +5052,7 @@ static int cpu_clk_set_wp(int wp)
 	struct cpu_wp *p;
 	u32 reg, pll_hfsm;
 	u32 stat;
+	unsigned long flags;
 
 	if (wp == cpu_curr_wp)
 		return 0;
@@ -5061,11 +5067,16 @@ static int cpu_clk_set_wp(int wp)
 	 */
 	if ((ddr_clk.parent == &ddr_hf_clk) ||
 		(p->pll_rate == cpu_wp_tbl[cpu_curr_wp].pll_rate)) {
+		spin_lock_irqsave(&mx5_clk_lock, flags);
 		reg = __raw_readl(MXC_CCM_CACRR);
 		reg &= ~MXC_CCM_CACRR_ARM_PODF_MASK;
 		reg |= cpu_wp_tbl[wp].cpu_podf << MXC_CCM_CACRR_ARM_PODF_OFFSET;
 		__raw_writel(reg, MXC_CCM_CACRR);
+		while (__raw_readl(MXC_CCM_CDHIPR) &
+			MXC_CCM_CDHIPR_ARM_PODF_BUSY)
+			;
 		cpu_curr_wp = wp;
+		spin_unlock_irqrestore(&mx5_clk_lock, flags);
 	} else {
 		struct timespec nstimeofday;
 		struct timespec curtime;
@@ -5085,10 +5096,15 @@ static int cpu_clk_set_wp(int wp)
 		reg &= ~MXC_PLL_DP_CTL_UPEN;
 		__raw_writel(reg, pll1_base + MXC_PLL_DP_CTL);
 
+		spin_lock_irqsave(&mx5_clk_lock, flags);
 		reg = __raw_readl(MXC_CCM_CACRR);
 		reg = (reg & ~MXC_CCM_CACRR_ARM_PODF_MASK)
 			| p->cpu_podf;
 		__raw_writel(reg, MXC_CCM_CACRR);
+		while (__raw_readl(MXC_CCM_CDHIPR) &
+			MXC_CCM_CDHIPR_ARM_PODF_BUSY)
+			;
+		spin_unlock_irqrestore(&mx5_clk_lock, flags);
 
 		reg = __raw_readl(pll1_base + MXC_PLL_DP_CTL);
 		pll_hfsm = reg & MXC_PLL_DP_CTL_HFSM;

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010-2011 Freescale Semiconductor, Inc.
+ * Copyright (C) 2010-2013 Freescale Semiconductor, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -61,6 +61,7 @@
 #define NUM_SCREENS_MIN	2
 #define EPDC_NUM_LUTS 16
 #define EPDC_MAX_NUM_UPDATES 20
+#define EPDC_MAX_NUM_BUFFERS	2
 #define INVALID_LUT -1
 
 #define DEFAULT_TEMP_INDEX	0
@@ -135,6 +136,7 @@ struct mxc_epdc_fb_data {
 	struct clk *epdc_clk_pix;
 	struct regulator *display_regulator;
 	struct regulator *vcom_regulator;
+	struct regulator *v3p3_regulator;
 	bool fw_default_load;
 
 	/* FB elements related to EPDC updates */
@@ -148,7 +150,7 @@ struct mxc_epdc_fb_data {
 	struct list_head upd_buf_free_list;
 	struct list_head upd_buf_collision_list;
 	struct update_data_list *cur_update;
-	spinlock_t queue_lock;
+	struct mutex queue_mutex;
 	int trt_entries;
 	int temp_index;
 	u8 *temp_range_bounds;
@@ -159,6 +161,10 @@ struct mxc_epdc_fb_data {
 	u32 *working_buffer_virt;
 	u32 working_buffer_phys;
 	u32 working_buffer_size;
+	dma_addr_t *phys_addr_updbuf;
+	void **virt_addr_updbuf;
+	u32 upd_buffer_num;
+	u32 max_num_buffers;
 	dma_addr_t phys_addr_copybuf;	/* Phys address of copied update data */
 	void *virt_addr_copybuf;	/* Used for PxP SW workaround */
 	u32 order_cnt;
@@ -169,6 +175,8 @@ struct mxc_epdc_fb_data {
 	struct delayed_work epdc_done_work;
 	struct workqueue_struct *epdc_submit_workqueue;
 	struct work_struct epdc_submit_work;
+	struct workqueue_struct *epdc_intr_workqueue;
+	struct work_struct epdc_intr_work;
 	bool waiting_for_wb;
 	bool waiting_for_lut;
 	bool waiting_for_lut15;
@@ -608,7 +616,8 @@ static inline int epdc_get_next_lut(void)
 
 static int epdc_choose_next_lut(int *next_lut)
 {
-	u32 luts_status = __raw_readl(EPDC_STATUS_LUTS);
+	u32 luts_status = (__raw_readl(EPDC_STATUS_LUTS)|
+		__raw_readl(EPDC_IRQ))&0xFFFF;
 
 	*next_lut = fls(luts_status & 0xFFFF);
 
@@ -866,6 +875,17 @@ static void epdc_powerup(struct mxc_epdc_fb_data *fb_data)
 
 	fb_data->updates_active = true;
 
+	/* Enable the v3p3 regulator */
+	ret = regulator_enable(fb_data->v3p3_regulator);
+	if (IS_ERR((void *)ret)) {
+		dev_err(fb_data->dev, "Unable to enable V3P3 regulator."
+			"err = 0x%x\n", ret);
+		mutex_unlock(&fb_data->power_mutex);
+		return;
+	}
+
+	msleep(1);
+
 	/* Enable pins used by EPDC */
 	if (fb_data->pdata->enable_pins)
 		fb_data->pdata->enable_pins();
@@ -925,6 +945,9 @@ static void epdc_powerdown(struct mxc_epdc_fb_data *fb_data)
 	if (fb_data->pdata->disable_pins)
 		fb_data->pdata->disable_pins();
 
+	/* turn off the V3p3 */
+	regulator_disable(fb_data->v3p3_regulator);
+
 	fb_data->power_state = POWER_STATE_OFF;
 	fb_data->powering_down = false;
 
@@ -942,9 +965,11 @@ static void epdc_init_sequence(struct mxc_epdc_fb_data *fb_data)
 	epdc_init_settings(fb_data);
 	__raw_writel(fb_data->waveform_buffer_phys, EPDC_WVADDR);
 	__raw_writel(fb_data->working_buffer_phys, EPDC_WB_ADDR);
+	fb_data->in_init = true;
 	epdc_powerup(fb_data);
 	draw_mode0(fb_data);
 	epdc_powerdown(fb_data);
+	fb_data->updates_active = false;
 }
 
 static int mxc_epdc_fb_mmap(struct fb_info *info, struct vm_area_struct *vma)
@@ -977,51 +1002,100 @@ static int mxc_epdc_fb_mmap(struct fb_info *info, struct vm_area_struct *vma)
 	return 0;
 }
 
+static inline u_int _chan_to_field(u_int chan, struct fb_bitfield *bf)
+{
+	chan &= 0xffff;
+	chan >>= 16 - bf->length;
+	return chan << bf->offset;
+}
+
 static int mxc_epdc_fb_setcolreg(u_int regno, u_int red, u_int green,
 				 u_int blue, u_int transp, struct fb_info *info)
 {
-	if (regno >= 256)	/* no. of hw registers */
-		return 1;
+	unsigned int val;
+	int ret = 1;
+
 	/*
-	 * Program hardware... do anything you want with transp
+	 * If greyscale is true, then we convert the RGB value
+	 * to greyscale no matter what visual we are using.
 	 */
-
-	/* grayscale works only partially under directcolor */
-	if (info->var.grayscale) {
-		/* grayscale = 0.30*R + 0.59*G + 0.11*B */
-		red = green = blue = (red * 77 + green * 151 + blue * 28) >> 8;
-	}
-
-#define CNVT_TOHW(val, width) ((((val)<<(width))+0x7FFF-(val))>>16)
+	if (info->var.grayscale)
+		red = green = blue = (19595 * red + 38470 * green +
+				      7471 * blue) >> 16;
 	switch (info->fix.visual) {
 	case FB_VISUAL_TRUECOLOR:
-	case FB_VISUAL_PSEUDOCOLOR:
-		red = CNVT_TOHW(red, info->var.red.length);
-		green = CNVT_TOHW(green, info->var.green.length);
-		blue = CNVT_TOHW(blue, info->var.blue.length);
-		transp = CNVT_TOHW(transp, info->var.transp.length);
+		/*
+		 * 16-bit True Colour.  We encode the RGB value
+		 * according to the RGB bitfield information.
+		 */
+		if (regno < 16) {
+			u32 *pal = info->pseudo_palette;
+
+			val = _chan_to_field(red, &info->var.red);
+			val |= _chan_to_field(green, &info->var.green);
+			val |= _chan_to_field(blue, &info->var.blue);
+
+			pal[regno] = val;
+			ret = 0;
+		}
 		break;
-	case FB_VISUAL_DIRECTCOLOR:
-		red = CNVT_TOHW(red, 8);	/* expect 8 bit DAC */
-		green = CNVT_TOHW(green, 8);
-		blue = CNVT_TOHW(blue, 8);
-		/* hey, there is bug in transp handling... */
-		transp = CNVT_TOHW(transp, 8);
+
+	case FB_VISUAL_STATIC_PSEUDOCOLOR:
+	case FB_VISUAL_PSEUDOCOLOR:
 		break;
 	}
-#undef CNVT_TOHW
-	/* Truecolor has hardware independent palette */
-	if (info->fix.visual == FB_VISUAL_TRUECOLOR) {
 
-		if (regno >= 16)
+	return ret;
+}
+
+static int mxc_epdc_fb_setcmap(struct fb_cmap *cmap, struct fb_info *info)
+{
+	int count, index, r;
+	u16 *red, *green, *blue, *transp;
+	u16 trans = 0xffff;
+	struct mxc_epdc_fb_data *fb_data = (struct mxc_epdc_fb_data *)info;
+	int i;
+
+	dev_dbg(fb_data->dev, "setcmap\n");
+
+	if (info->fix.visual == FB_VISUAL_STATIC_PSEUDOCOLOR) {
+		/* Only support an 8-bit, 256 entry lookup */
+		if (cmap->len != 256)
 			return 1;
 
-		((u32 *) (info->pseudo_palette))[regno] =
-		    (red << info->var.red.offset) |
-		    (green << info->var.green.offset) |
-		    (blue << info->var.blue.offset) |
-		    (transp << info->var.transp.offset);
+		mxc_epdc_fb_flush_updates(fb_data);
+
+		mutex_lock(&fb_data->pxp_mutex);
+		/*
+		 * Store colormap in pxp_conf structure for later transmit
+		 * to PxP during update process to convert gray pixels.
+		 *
+		 * Since red=blue=green for pseudocolor visuals, we can
+		 * just use red values.
+		 */
+		for (i = 0; i < 256; i++)
+			fb_data->pxp_conf.proc_data.lut_map[i] = cmap->red[i] & 0xFF;
+
+		fb_data->pxp_conf.proc_data.lut_map_updated = true;
+
+		mutex_unlock(&fb_data->pxp_mutex);
+	} else {
+		red     = cmap->red;
+		green   = cmap->green;
+		blue    = cmap->blue;
+		transp  = cmap->transp;
+		index   = cmap->start;
+
+		for (count = 0; count < cmap->len; count++) {
+			if (transp)
+				trans = *transp++;
+			r = mxc_epdc_fb_setcolreg(index++, *red++, *green++, *blue++,
+						trans, info);
+			if (r != 0)
+				return r;
+		}
 	}
+
 	return 0;
 }
 
@@ -1136,7 +1210,6 @@ static int mxc_epdc_fb_set_par(struct fb_info *info)
 	struct mxc_epdc_fb_mode *epdc_modes = fb_data->pdata->epdc_mode;
 	int i;
 	int ret;
-	unsigned long flags;
 	__u32 xoffset_old, yoffset_old;
 
 	/*
@@ -1145,7 +1218,7 @@ static int mxc_epdc_fb_set_par(struct fb_info *info)
 	 */
 	mxc_epdc_fb_flush_updates(fb_data);
 
-	spin_lock_irqsave(&fb_data->queue_lock, flags);
+	mutex_lock(&fb_data->queue_mutex);
 	/*
 	 * Set all screeninfo except for xoffset/yoffset
 	 * Subsequent call to pan_display will handle those.
@@ -1155,7 +1228,7 @@ static int mxc_epdc_fb_set_par(struct fb_info *info)
 	fb_data->epdc_fb_var = *screeninfo;
 	fb_data->epdc_fb_var.xoffset = xoffset_old;
 	fb_data->epdc_fb_var.yoffset = yoffset_old;
-	spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+	mutex_unlock(&fb_data->queue_mutex);
 
 	mutex_lock(&fb_data->pxp_mutex);
 
@@ -1430,7 +1503,7 @@ void mxc_epdc_fb_set_waveform_modes(struct mxcfb_waveform_modes *modes,
 	struct mxc_epdc_fb_data *fb_data = info ?
 		(struct mxc_epdc_fb_data *)info:g_fb_data;
 
-	memcpy(&fb_data->wv_modes, modes, sizeof(modes));
+	memcpy(&fb_data->wv_modes, modes, sizeof(struct mxcfb_waveform_modes));
 }
 EXPORT_SYMBOL(mxc_epdc_fb_set_waveform_modes);
 
@@ -1469,12 +1542,11 @@ int mxc_epdc_fb_set_temperature(int temperature, struct fb_info *info)
 {
 	struct mxc_epdc_fb_data *fb_data = info ?
 		(struct mxc_epdc_fb_data *)info:g_fb_data;
-	unsigned long flags;
 
 	/* Store temp index. Used later when configuring updates. */
-	spin_lock_irqsave(&fb_data->queue_lock, flags);
+	mutex_lock(&fb_data->queue_mutex);
 	fb_data->temp_index = mxc_epdc_fb_get_temp_index(fb_data, temperature);
-	spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+	mutex_unlock(&fb_data->queue_mutex);
 
 	return 0;
 }
@@ -1800,6 +1872,10 @@ static int epdc_process_update(struct update_data_list *upd_data_list,
 	if (upd_desc_list->upd_data.flags & EPDC_FLAG_FORCE_MONOCHROME)
 		fb_data->pxp_conf.proc_data.lut_transform |=
 			PXP_LUT_BLACK_WHITE;
+	if (upd_desc_list->upd_data.flags & EPDC_FLAG_USE_CMAP) {
+		fb_data->pxp_conf.proc_data.lut_transform |=
+			PXP_LUT_USE_CMAP;
+	}
 
 	/*
 	 * Toggle inversion processing if 8-bit
@@ -1937,7 +2013,6 @@ static void epdc_submit_work_func(struct work_struct *work)
 	struct update_data_list *next_update, *temp_update;
 	struct update_desc_list *next_desc, *temp_desc;
 	struct update_marker_data *next_marker, *temp_marker;
-	unsigned long flags;
 	struct mxc_epdc_fb_data *fb_data =
 		container_of(work, struct mxc_epdc_fb_data, epdc_submit_work);
 	struct update_data_list *upd_data_list = NULL;
@@ -1946,7 +2021,7 @@ static void epdc_submit_work_func(struct work_struct *work)
 	int ret;
 
 	/* Protect access to buffer queues and to update HW */
-	spin_lock_irqsave(&fb_data->queue_lock, flags);
+	mutex_lock(&fb_data->queue_mutex);
 
 	/*
 	 * Are any of our collision updates able to go now?
@@ -2024,7 +2099,7 @@ static void epdc_submit_work_func(struct work_struct *work)
 		*/
 		if (!upd_data_list &&
 			list_empty(&fb_data->upd_buf_free_list)) {
-			spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+			mutex_unlock(&fb_data->queue_mutex);
 			return;
 		}
 
@@ -2071,18 +2146,29 @@ static void epdc_submit_work_func(struct work_struct *work)
 		}
 	}
 
-	/* Release buffer queues */
-	spin_unlock_irqrestore(&fb_data->queue_lock, flags);
-
 	/* Is update list empty? */
-	if (!upd_data_list)
+	if (!upd_data_list) {
+		mutex_unlock(&fb_data->queue_mutex);
 		return;
+	}
+
+	/* Select from PxP output buffers */
+	upd_data_list->phys_addr =
+		fb_data->phys_addr_updbuf[fb_data->upd_buffer_num];
+	upd_data_list->virt_addr =
+		fb_data->virt_addr_updbuf[fb_data->upd_buffer_num];
+	fb_data->upd_buffer_num++;
+	if (fb_data->upd_buffer_num > fb_data->max_num_buffers-1)
+		fb_data->upd_buffer_num = 0;
+
+	/* Release buffer queues */
+	mutex_unlock(&fb_data->queue_mutex);
 
 	/* Perform PXP processing - EPDC power will also be enabled */
 	if (epdc_process_update(upd_data_list, fb_data)) {
 		dev_dbg(fb_data->dev, "PXP processing error.\n");
 		/* Protect access to buffer queues and to update HW */
-		spin_lock_irqsave(&fb_data->queue_lock, flags);
+		mutex_lock(&fb_data->queue_mutex);
 		list_del_init(&upd_data_list->update_desc->list);
 		kfree(upd_data_list->update_desc);
 		upd_data_list->update_desc = NULL;
@@ -2090,17 +2176,17 @@ static void epdc_submit_work_func(struct work_struct *work)
 		list_add_tail(&upd_data_list->list,
 			&fb_data->upd_buf_free_list);
 		/* Release buffer queues */
-		spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+		mutex_unlock(&fb_data->queue_mutex);
 		return;
 	}
+
+	/* Protect access to buffer queues and to update HW */
+	mutex_lock(&fb_data->queue_mutex);
 
 	/* Get rotation-adjusted coordinates */
 	adjust_coordinates(fb_data,
 		&upd_data_list->update_desc->upd_data.update_region,
 		&adj_update_region);
-
-	/* Protect access to buffer queues and to update HW */
-	spin_lock_irqsave(&fb_data->queue_lock, flags);
 
 	/*
 	 * Is the working buffer idle?
@@ -2116,9 +2202,9 @@ static void epdc_submit_work_func(struct work_struct *work)
 		fb_data->waiting_for_wb = true;
 
 		/* Leave spinlock while waiting for WB to complete */
-		spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+		mutex_unlock(&fb_data->queue_mutex);
 		wait_for_completion(&fb_data->update_res_free);
-		spin_lock_irqsave(&fb_data->queue_lock, flags);
+		mutex_lock(&fb_data->queue_mutex);
 	}
 
 	/*
@@ -2135,9 +2221,9 @@ static void epdc_submit_work_func(struct work_struct *work)
 		fb_data->waiting_for_lut = true;
 
 		/* Leave spinlock while waiting for LUT to free up */
-		spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+		mutex_unlock(&fb_data->queue_mutex);
 		wait_for_completion(&fb_data->update_res_free);
-		spin_lock_irqsave(&fb_data->queue_lock, flags);
+		mutex_lock(&fb_data->queue_mutex);
 	}
 
 	ret = epdc_choose_next_lut(&upd_data_list->lut_num);
@@ -2155,9 +2241,9 @@ static void epdc_submit_work_func(struct work_struct *work)
 		fb_data->waiting_for_lut15 = true;
 
 		/* Leave spinlock while waiting for LUT to free up */
-		spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+		mutex_unlock(&fb_data->queue_mutex);
 		wait_for_completion(&fb_data->lut15_free);
-		spin_lock_irqsave(&fb_data->queue_lock, flags);
+		mutex_lock(&fb_data->queue_mutex);
 
 		epdc_choose_next_lut(&upd_data_list->lut_num);
 	} else if (ret) {
@@ -2168,7 +2254,7 @@ static void epdc_submit_work_func(struct work_struct *work)
 		epdc_eof_intr(true);
 
 		/* Leave spinlock while waiting for EOF event */
-		spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+		mutex_unlock(&fb_data->queue_mutex);
 		ret = wait_for_completion_timeout(&fb_data->eof_event,
 			msecs_to_jiffies(1000));
 		if (!ret) {
@@ -2176,7 +2262,7 @@ static void epdc_submit_work_func(struct work_struct *work)
 			epdc_eof_intr(false);
 		}
 		udelay(fb_data->eof_sync_period);
-		spin_lock_irqsave(&fb_data->queue_lock, flags);
+		mutex_lock(&fb_data->queue_mutex);
 
 	}
 
@@ -2217,7 +2303,7 @@ static void epdc_submit_work_func(struct work_struct *work)
 			   false, 0);
 
 	/* Release buffer queues */
-	spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+	mutex_unlock(&fb_data->queue_mutex);
 }
 
 
@@ -2227,7 +2313,6 @@ int mxc_epdc_fb_send_update(struct mxcfb_update_data *upd_data,
 	struct mxc_epdc_fb_data *fb_data = info ?
 		(struct mxc_epdc_fb_data *)info:g_fb_data;
 	struct update_data_list *upd_data_list = NULL;
-	unsigned long flags;
 	struct mxcfb_rect *screen_upd_region; /* Region on screen to update */
 	int temp_index;
 	int ret;
@@ -2286,7 +2371,7 @@ int mxc_epdc_fb_send_update(struct mxcfb_update_data *upd_data,
 		}
 	}
 
-	spin_lock_irqsave(&fb_data->queue_lock, flags);
+	mutex_lock(&fb_data->queue_mutex);
 
 	/*
 	 * If we are waiting to go into suspend, or the FB is blanked,
@@ -2296,11 +2381,14 @@ int mxc_epdc_fb_send_update(struct mxcfb_update_data *upd_data,
 		(fb_data->blank != FB_BLANK_UNBLANK)) {
 		dev_dbg(fb_data->dev, "EPDC not active."
 			"Update request abort.\n");
-		spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+		mutex_unlock(&fb_data->queue_mutex);
 		return -EPERM;
 	}
 
 	if (fb_data->upd_scheme == UPDATE_SCHEME_SNAPSHOT) {
+		int count = 0;
+		struct update_data_list *plist;
+
 		/*
 		 * If next update is a FULL mode update, then we must
 		 * ensure that all pending & active updates are complete
@@ -2309,19 +2397,22 @@ int mxc_epdc_fb_send_update(struct mxcfb_update_data *upd_data,
 		 * other updates.  Block here until updates are flushed.
 		 */
 		if (upd_data->update_mode == UPDATE_MODE_FULL) {
-			spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+			mutex_unlock(&fb_data->queue_mutex);
 			mxc_epdc_fb_flush_updates(fb_data);
-			spin_lock_irqsave(&fb_data->queue_lock, flags);
+			mutex_lock(&fb_data->queue_mutex);
 		}
 
-		/*
-		 * Get available intermediate (PxP output) buffer to hold
-		 * processed update region
-		 */
-		if (list_empty(&fb_data->upd_buf_free_list)) {
+		/* Count buffers in free buffer list */
+		list_for_each_entry(plist, &fb_data->upd_buf_free_list, list)
+			count++;
+
+		/* Use count to determine if we have enough
+		 * free buffers to handle this update request */
+		if (count + fb_data->max_num_buffers
+			<= EPDC_MAX_NUM_UPDATES) {
 			dev_err(fb_data->dev,
 				"No free intermediate buffers available.\n");
-			spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+			mutex_unlock(&fb_data->queue_mutex);
 			return -ENOMEM;
 		}
 
@@ -2345,7 +2436,7 @@ int mxc_epdc_fb_send_update(struct mxcfb_update_data *upd_data,
 			list_add(&upd_data_list->list,
 				&fb_data->upd_buf_free_list);
 		}
-		spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+		mutex_unlock(&fb_data->queue_mutex);
 		return -EPERM;
 	}
 	/* Initialize per-update marker list */
@@ -2361,7 +2452,7 @@ int mxc_epdc_fb_send_update(struct mxcfb_update_data *upd_data,
 				GFP_KERNEL);
 		if (!marker_data) {
 			dev_err(fb_data->dev, "No memory for marker!\n");
-			spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+			mutex_unlock(&fb_data->queue_mutex);
 			return -ENOMEM;
 		}
 		list_add_tail(&marker_data->upd_list,
@@ -2377,7 +2468,7 @@ int mxc_epdc_fb_send_update(struct mxcfb_update_data *upd_data,
 	if (fb_data->upd_scheme != UPDATE_SCHEME_SNAPSHOT) {
 		/* Queued update scheme processing */
 
-		spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+		mutex_unlock(&fb_data->queue_mutex);
 
 		/* Signal workqueue to handle new update */
 		queue_work(fb_data->epdc_submit_workqueue,
@@ -2392,13 +2483,22 @@ int mxc_epdc_fb_send_update(struct mxcfb_update_data *upd_data,
 	upd_data_list->update_desc = upd_desc;
 	list_del_init(&upd_desc->list);
 
-	spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+	mutex_unlock(&fb_data->queue_mutex);
 
 	/*
 	 * Hold on to original screen update region, which we
 	 * will ultimately use when telling EPDC where to update on panel
 	 */
 	screen_upd_region = &upd_desc->upd_data.update_region;
+
+	/* Select from PxP output buffers */
+	upd_data_list->phys_addr =
+		fb_data->phys_addr_updbuf[fb_data->upd_buffer_num];
+	upd_data_list->virt_addr =
+		fb_data->virt_addr_updbuf[fb_data->upd_buffer_num];
+	fb_data->upd_buffer_num++;
+	if (fb_data->upd_buffer_num > fb_data->max_num_buffers-1)
+		fb_data->upd_buffer_num = 0;
 
 	ret = epdc_process_update(upd_data_list, fb_data);
 	if (ret) {
@@ -2414,7 +2514,7 @@ int mxc_epdc_fb_send_update(struct mxcfb_update_data *upd_data,
 		NULL);
 
 	/* Grab lock for queue manipulation and update submission */
-	spin_lock_irqsave(&fb_data->queue_lock, flags);
+	mutex_lock(&fb_data->queue_mutex);
 
 	/*
 	 * Is the working buffer idle?
@@ -2426,7 +2526,7 @@ int mxc_epdc_fb_send_update(struct mxcfb_update_data *upd_data,
 		list_add_tail(&upd_data_list->list, &fb_data->upd_buf_queue);
 
 		/* Return and allow the update to be submitted by the ISR. */
-		spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+		mutex_unlock(&fb_data->queue_mutex);
 		return 0;
 	}
 
@@ -2438,7 +2538,7 @@ int mxc_epdc_fb_send_update(struct mxcfb_update_data *upd_data,
 		list_add_tail(&upd_data_list->list, &fb_data->upd_buf_queue);
 
 		/* Return and allow the update to be submitted by the ISR. */
-		spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+		mutex_unlock(&fb_data->queue_mutex);
 		return 0;
 	}
 
@@ -2477,7 +2577,7 @@ int mxc_epdc_fb_send_update(struct mxcfb_update_data *upd_data,
 			   upd_desc->upd_data.waveform_mode,
 			   upd_desc->upd_data.update_mode, false, 0);
 
-	spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+	mutex_unlock(&fb_data->queue_mutex);
 	return 0;
 }
 EXPORT_SYMBOL(mxc_epdc_fb_send_update);
@@ -2488,7 +2588,6 @@ int mxc_epdc_fb_wait_update_complete(u32 update_marker, struct fb_info *info)
 		(struct mxc_epdc_fb_data *)info:g_fb_data;
 	struct update_marker_data *next_marker;
 	struct update_marker_data *temp;
-	unsigned long flags;
 	bool marker_found = false;
 	int ret = 0;
 
@@ -2503,7 +2602,7 @@ int mxc_epdc_fb_wait_update_complete(u32 update_marker, struct fb_info *info)
 	 */
 
 	/* Grab queue lock to protect access to marker list */
-	spin_lock_irqsave(&fb_data->queue_lock, flags);
+	mutex_lock(&fb_data->queue_mutex);
 
 	list_for_each_entry_safe(next_marker, temp,
 		&fb_data->full_marker_list, full_list) {
@@ -2516,7 +2615,7 @@ int mxc_epdc_fb_wait_update_complete(u32 update_marker, struct fb_info *info)
 		}
 	}
 
-	spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+	mutex_unlock(&fb_data->queue_mutex);
 
 	/*
 	 * If marker not found, it has either been signalled already
@@ -2701,10 +2800,13 @@ static void mxc_epdc_fb_deferred_io(struct fb_info *info,
 
 void mxc_epdc_fb_flush_updates(struct mxc_epdc_fb_data *fb_data)
 {
-	unsigned long flags;
 	int ret;
+
+	if (fb_data->in_init)
+		return;
+
 	/* Grab queue lock to prevent any new updates from being submitted */
-	spin_lock_irqsave(&fb_data->queue_lock, flags);
+	mutex_lock(&fb_data->queue_mutex);
 
 	/*
 	 * 3 places to check for updates that are active or pending:
@@ -2720,7 +2822,7 @@ void mxc_epdc_fb_flush_updates(struct mxc_epdc_fb_data *fb_data)
 		init_completion(&fb_data->updates_done);
 		fb_data->waiting_for_idle = true;
 
-		spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+		mutex_unlock(&fb_data->queue_mutex);
 		/* Wait for any currently active updates to complete */
 		ret = wait_for_completion_timeout(&fb_data->updates_done,
 						msecs_to_jiffies(5000));
@@ -2728,11 +2830,11 @@ void mxc_epdc_fb_flush_updates(struct mxc_epdc_fb_data *fb_data)
 			dev_err(fb_data->dev,
 				"Flush updates timeout! ret = 0x%x\n", ret);
 
-		spin_lock_irqsave(&fb_data->queue_lock, flags);
+		mutex_lock(&fb_data->queue_mutex);
 		fb_data->waiting_for_idle = false;
 	}
 
-	spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+	mutex_unlock(&fb_data->queue_mutex);
 }
 
 static int mxc_epdc_fb_blank(int blank, struct fb_info *info)
@@ -2800,7 +2902,6 @@ static int mxc_epdc_fb_pan_display(struct fb_var_screeninfo *var,
 {
 	struct mxc_epdc_fb_data *fb_data = (struct mxc_epdc_fb_data *)info;
 	u_int y_bottom;
-	unsigned long flags;
 
 	dev_dbg(info->device, "%s: var->yoffset %d, info->var.yoffset %d\n",
 		 __func__, var->yoffset, info->var.yoffset);
@@ -2823,7 +2924,7 @@ static int mxc_epdc_fb_pan_display(struct fb_var_screeninfo *var,
 	if (y_bottom > info->var.yres_virtual)
 		return -EINVAL;
 
-	spin_lock_irqsave(&fb_data->queue_lock, flags);
+	mutex_lock(&fb_data->queue_mutex);
 
 	fb_data->fb_offset = (var->yoffset * var->xres_virtual + var->xoffset)
 		* (var->bits_per_pixel) / 8;
@@ -2836,7 +2937,7 @@ static int mxc_epdc_fb_pan_display(struct fb_var_screeninfo *var,
 	else
 		info->var.vmode &= ~FB_VMODE_YWRAP;
 
-	spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+	mutex_unlock(&fb_data->queue_mutex);
 
 	return 0;
 }
@@ -2845,6 +2946,7 @@ static struct fb_ops mxc_epdc_fb_ops = {
 	.owner = THIS_MODULE,
 	.fb_check_var = mxc_epdc_fb_check_var,
 	.fb_set_par = mxc_epdc_fb_set_par,
+	.fb_setcmap = mxc_epdc_fb_setcmap,
 	.fb_setcolreg = mxc_epdc_fb_setcolreg,
 	.fb_pan_display = mxc_epdc_fb_pan_display,
 	.fb_ioctl = mxc_epdc_fb_ioctl,
@@ -2887,21 +2989,7 @@ static bool is_free_list_full(struct mxc_epdc_fb_data *fb_data)
 static irqreturn_t mxc_epdc_irq_handler(int irq, void *dev_id)
 {
 	struct mxc_epdc_fb_data *fb_data = dev_id;
-	struct update_data_list *collision_update;
-	struct mxcfb_rect *next_upd_region;
-	struct update_marker_data *next_marker;
-	struct update_marker_data *temp;
-	unsigned long flags;
-	int temp_index;
-	u32 temp_mask;
-	u32 lut;
-	bool ignore_collision = false;
-	int i;
-	bool wb_lut_done = false;
-	bool free_update = true;
-	int next_lut;
-	u32 epdc_irq_stat, epdc_luts_active, epdc_wb_busy, epdc_luts_avail;
-	u32 epdc_collision, epdc_colliding_luts, epdc_next_lut_15;
+	u32 ints_fired;
 
 	/*
 	 * If we just completed one-time panel init, bypass
@@ -2941,17 +3029,47 @@ static irqreturn_t mxc_epdc_irq_handler(int irq, void *dev_id)
 		complete(&fb_data->eof_event);
 	}
 
+	/* Clear the interrupt mask for any interrupts signalled */
+	ints_fired = __raw_readl(EPDC_IRQ_MASK) & __raw_readl(EPDC_IRQ);
+	__raw_writel(ints_fired, EPDC_IRQ_MASK_CLEAR);
+
+	queue_work(fb_data->epdc_intr_workqueue,
+		&fb_data->epdc_intr_work);
+
+	return IRQ_HANDLED;
+}
+
+static void epdc_intr_work_func(struct work_struct *work)
+{
+	struct mxc_epdc_fb_data *fb_data =
+		container_of(work, struct mxc_epdc_fb_data, epdc_intr_work);
+	struct update_data_list *collision_update;
+	struct mxcfb_rect *next_upd_region;
+	struct update_marker_data *next_marker;
+	struct update_marker_data *temp;
+	int temp_index;
+	u32 temp_mask;
+	u32 lut;
+	bool ignore_collision = false;
+	int i;
+	bool wb_lut_done = false;
+	bool free_update = true;
+	int next_lut;
+	u32 epdc_irq_stat, epdc_luts_active, epdc_wb_busy, epdc_luts_avail;
+	u32 epdc_collision, epdc_colliding_luts, epdc_next_lut_15;
+	bool epdc_waiting_on_wb;
+
+	/* Protect access to buffer queues and to update HW */
+	mutex_lock(&fb_data->queue_mutex);
+
 	/* Capture EPDC status one time up front to prevent race conditions */
-	epdc_irq_stat = __raw_readl(EPDC_IRQ);
 	epdc_luts_active = epdc_any_luts_active();
 	epdc_wb_busy = epdc_is_working_buffer_busy();
 	epdc_luts_avail = epdc_any_luts_available();
 	epdc_collision = epdc_is_collision();
 	epdc_colliding_luts = epdc_get_colliding_luts();
-	epdc_next_lut_15 = epdc_choose_next_lut(&next_lut);
-
-	/* Protect access to buffer queues and to update HW */
-	spin_lock_irqsave(&fb_data->queue_lock, flags);
+	epdc_irq_stat = __raw_readl(EPDC_IRQ);
+	epdc_waiting_on_wb = (fb_data->cur_update != NULL) ? true : false;
 
 	/* Free any LUTs that have completed */
 	for (i = 0; i < EPDC_NUM_LUTS; i++) {
@@ -2959,9 +3077,6 @@ static irqreturn_t mxc_epdc_irq_handler(int irq, void *dev_id)
 			continue;
 
 		dev_dbg(fb_data->dev, "\nLUT %d completed\n", i);
-
-		/* Disable IRQ for completed LUT */
-		epdc_lut_complete_intr(i, false);
 
 		/*
 		 * Go through all updates in the collision list and
@@ -3049,21 +3164,21 @@ static irqreturn_t mxc_epdc_irq_handler(int irq, void *dev_id)
 	/* Is Working Buffer busy? */
 	if (epdc_wb_busy) {
 		/* Can't submit another update until WB is done */
-		spin_unlock_irqrestore(&fb_data->queue_lock, flags);
-		return IRQ_HANDLED;
+		mutex_unlock(&fb_data->queue_mutex);
+		return;
 	}
 
 	/*
 	 * Were we waiting on working buffer?
 	 * If so, update queues and check for collisions
 	 */
-	if (fb_data->cur_update != NULL) {
+	if (epdc_waiting_on_wb) {
 		dev_dbg(fb_data->dev, "\nWorking buffer completed\n");
 
 		/* Signal completion if submit workqueue was waiting on WB */
 		if (fb_data->waiting_for_wb) {
 			complete(&fb_data->update_res_free);
-			fb_data->waiting_for_lut = false;
+			fb_data->waiting_for_wb = false;
 		}
 
 		/* Was there a collision? */
@@ -3165,9 +3280,9 @@ static irqreturn_t mxc_epdc_irq_handler(int irq, void *dev_id)
 				&fb_data->epdc_submit_work);
 
 		/* Release buffer queues */
-		spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+		mutex_unlock(&fb_data->queue_mutex);
 
-		return IRQ_HANDLED;
+		return;
 	}
 
 	/* Snapshot update scheme processing */
@@ -3175,15 +3290,16 @@ static irqreturn_t mxc_epdc_irq_handler(int irq, void *dev_id)
 	/* Check to see if any LUTs are free */
 	if (!epdc_luts_avail) {
 		dev_dbg(fb_data->dev, "No luts available.\n");
-		spin_unlock_irqrestore(&fb_data->queue_lock, flags);
-		return IRQ_HANDLED;
+		mutex_unlock(&fb_data->queue_mutex);
+		return;
 	}
 
+	epdc_next_lut_15 = epdc_choose_next_lut(&next_lut);
 	/* Check to see if there is a valid LUT to use */
 	if (epdc_next_lut_15 && fb_data->tce_prevent) {
 		dev_dbg(fb_data->dev, "Must wait for LUT15\n");
-		spin_unlock_irqrestore(&fb_data->queue_lock, flags);
-		return IRQ_HANDLED;
+		mutex_unlock(&fb_data->queue_mutex);
+		return;
 	}
 
 	/*
@@ -3217,8 +3333,8 @@ static irqreturn_t mxc_epdc_irq_handler(int irq, void *dev_id)
 			dev_dbg(fb_data->dev, "No pending updates.\n");
 
 			/* No updates pending, so we are done */
-			spin_unlock_irqrestore(&fb_data->queue_lock, flags);
-			return IRQ_HANDLED;
+			mutex_unlock(&fb_data->queue_mutex);
+			return;
 		} else {
 			dev_dbg(fb_data->dev, "Found a pending update!\n");
 
@@ -3268,9 +3384,9 @@ static irqreturn_t mxc_epdc_irq_handler(int irq, void *dev_id)
 			   false, 0);
 
 	/* Release buffer queues */
-	spin_unlock_irqrestore(&fb_data->queue_lock, flags);
+	mutex_unlock(&fb_data->queue_mutex);
 
-	return IRQ_HANDLED;
+	return;
 }
 
 static void draw_mode0(struct mxc_epdc_fb_data *fb_data)
@@ -3284,7 +3400,6 @@ static void draw_mode0(struct mxc_epdc_fb_data *fb_data)
 
 	epdc_working_buf_intr(true);
 	epdc_lut_complete_intr(0, true);
-	fb_data->in_init = true;
 
 	/* Use unrotated (native) width/height */
 	if ((screeninfo->rotate == FB_ROTATE_CW) ||
@@ -3740,6 +3855,8 @@ int __devinit mxc_epdc_fb_probe(struct platform_device *pdev)
 	fb_data->fb_offset = 0;
 	fb_data->eof_sync_period = 0;
 
+	fb_data->max_num_buffers = EPDC_MAX_NUM_BUFFERS;
+
 	/*
 	 * Initialize lists for pending updates,
 	 * active update requests, update collisions,
@@ -3755,29 +3872,38 @@ int __devinit mxc_epdc_fb_probe(struct platform_device *pdev)
 		upd_list = kzalloc(sizeof(*upd_list), GFP_KERNEL);
 		if (upd_list == NULL) {
 			ret = -ENOMEM;
-			goto out_upd_buffers;
+			goto out_upd_lists;
 		}
 
+		/* Add newly allocated buffer to free list */
+		list_add(&upd_list->list, &fb_data->upd_buf_free_list);
+	}
+
+	fb_data->virt_addr_updbuf =
+		kzalloc(sizeof(void *) * fb_data->max_num_buffers, GFP_KERNEL);
+	fb_data->phys_addr_updbuf =
+		kzalloc(sizeof(dma_addr_t) * fb_data->max_num_buffers,
+			GFP_KERNEL);
+	for (i = 0; i < fb_data->max_num_buffers; i++) {
 		/*
 		 * Allocate memory for PxP output buffer.
 		 * Each update buffer is 1 byte per pixel, and can
 		 * be as big as the full-screen frame buffer
 		 */
-		upd_list->virt_addr =
+		fb_data->virt_addr_updbuf[i] =
 		    dma_alloc_coherent(fb_data->info.device, fb_data->max_pix_size,
-				       &upd_list->phys_addr, GFP_DMA);
-		if (upd_list->virt_addr == NULL) {
-			kfree(upd_list);
+				       &fb_data->phys_addr_updbuf[i], GFP_DMA);
+		if (fb_data->virt_addr_updbuf[i] == NULL) {
 			ret = -ENOMEM;
 			goto out_upd_buffers;
 		}
 
-		/* Add newly allocated buffer to free list */
-		list_add(&upd_list->list, &fb_data->upd_buf_free_list);
-
 		dev_dbg(fb_data->info.device, "allocated %d bytes @ 0x%08X\n",
-			fb_data->max_pix_size, upd_list->phys_addr);
+			fb_data->max_pix_size, fb_data->phys_addr_updbuf[i]);
 	}
+
+	/* Counter indicating which update buffer should be used next. */
+	fb_data->upd_buffer_num = 0;
 
 	/*
 	 * Allocate memory for PxP SW workaround buffer
@@ -3844,6 +3970,14 @@ int __devinit mxc_epdc_fb_probe(struct platform_device *pdev)
 	for (i = 0; i < EPDC_NUM_LUTS; i++)
 		fb_data->lut_update_order[i] = 0;
 
+	INIT_DELAYED_WORK(&fb_data->epdc_done_work, epdc_done_work_func);
+	fb_data->epdc_submit_workqueue =
+		__create_workqueue(("EPDC Submit"), 1, 0, 1);
+	INIT_WORK(&fb_data->epdc_submit_work, epdc_submit_work_func);
+	fb_data->epdc_intr_workqueue =
+		__create_workqueue(("EPDC Interrupt"), 1, 0, 1);
+	INIT_WORK(&fb_data->epdc_intr_work, epdc_intr_work_func);
+
 	/* Retrieve EPDC IRQ num */
 	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
 	if (res == NULL) {
@@ -3862,10 +3996,6 @@ int __devinit mxc_epdc_fb_probe(struct platform_device *pdev)
 		ret = -ENODEV;
 		goto out_dma_work_buf;
 	}
-
-	INIT_DELAYED_WORK(&fb_data->epdc_done_work, epdc_done_work_func);
-	fb_data->epdc_submit_workqueue = create_rt_workqueue("submit");
-	INIT_WORK(&fb_data->epdc_submit_work, epdc_submit_work_func);
 
 	info->fbdefio = &mxc_epdc_fb_defio;
 #ifdef CONFIG_FB_MXC_EINK_AUTO_UPDATE_MODE
@@ -3888,16 +4018,23 @@ int __devinit mxc_epdc_fb_probe(struct platform_device *pdev)
 		ret = -ENODEV;
 		goto out_irq;
 	}
+	fb_data->v3p3_regulator = regulator_get(NULL, "V3P3");
+	if (IS_ERR(fb_data->v3p3_regulator)) {
+		regulator_put(fb_data->vcom_regulator);
+		regulator_put(fb_data->display_regulator);
+		dev_err(&pdev->dev, "Unable to get V3P3 regulator."
+			"err = 0x%x\n", (int)fb_data->vcom_regulator);
+		ret = -ENODEV;
+		goto out_irq;
+	}
 
 	if (device_create_file(info->dev, &fb_attrs[0]))
 		dev_err(&pdev->dev, "Unable to create file from fb_attrs\n");
 
 	fb_data->cur_update = NULL;
 
-	spin_lock_init(&fb_data->queue_lock);
-
+	mutex_init(&fb_data->queue_mutex);
 	mutex_init(&fb_data->pxp_mutex);
-
 	mutex_init(&fb_data->power_mutex);
 
 	/* PxP DMA interface */
@@ -3922,6 +4059,7 @@ int __devinit mxc_epdc_fb_probe(struct platform_device *pdev)
 	proc_data->bgcolor = 0;
 	proc_data->overlay_state = 0;
 	proc_data->lut_transform = PXP_LUT_NONE;
+	proc_data->lut_map = NULL;
 
 	/*
 	 * We initially configure PxP for RGB->YUV conversion,
@@ -3962,6 +4100,18 @@ int __devinit mxc_epdc_fb_probe(struct platform_device *pdev)
 	pxp_conf->out_param.width = fb_data->info.var.xres;
 	pxp_conf->out_param.height = fb_data->info.var.yres;
 	pxp_conf->out_param.pixel_fmt = PXP_PIX_FMT_GREY;
+
+	/* Initialize color map for conversion of 8-bit gray pixels */
+	fb_data->pxp_conf.proc_data.lut_map = kmalloc(256, GFP_KERNEL);
+	if (fb_data->pxp_conf.proc_data.lut_map == NULL) {
+		dev_err(&pdev->dev, "Can't allocate mem for lut map!\n");
+		ret = -ENOMEM;
+		goto out_dmaengine;
+	}
+	for (i = 0; i < 256; i++)
+		fb_data->pxp_conf.proc_data.lut_map[i] = i;
+
+	fb_data->pxp_conf.proc_data.lut_map_updated = true;
 
 	/*
 	 * Ensure this is set to NULL here...we will initialize pxp_chan
@@ -4047,12 +4197,20 @@ out_copybuffer:
 			      fb_data->virt_addr_copybuf,
 			      fb_data->phys_addr_copybuf);
 out_upd_buffers:
+	for (i = 0; i < fb_data->max_num_buffers; i++)
+		if (fb_data->virt_addr_updbuf[i] != NULL)
+			dma_free_writecombine(&pdev->dev,
+				fb_data->max_pix_size,
+				fb_data->virt_addr_updbuf[i],
+				fb_data->phys_addr_updbuf[i]);
+	if (fb_data->virt_addr_updbuf != NULL)
+		kfree(fb_data->virt_addr_updbuf);
+	if (fb_data->phys_addr_updbuf != NULL)
+		kfree(fb_data->phys_addr_updbuf);
+out_upd_lists:
 	list_for_each_entry_safe(plist, temp_list, &fb_data->upd_buf_free_list,
 			list) {
 		list_del(&plist->list);
-		dma_free_writecombine(&pdev->dev, fb_data->max_pix_size,
-				      plist->virt_addr,
-				      plist->phys_addr);
 		kfree(plist);
 	}
 out_dma_fb:
@@ -4073,6 +4231,7 @@ static int mxc_epdc_fb_remove(struct platform_device *pdev)
 {
 	struct update_data_list *plist, *temp_list;
 	struct mxc_epdc_fb_data *fb_data = platform_get_drvdata(pdev);
+	int i;
 
 	mxc_epdc_fb_blank(FB_BLANK_POWERDOWN, &fb_data->info);
 
@@ -4081,9 +4240,20 @@ static int mxc_epdc_fb_remove(struct platform_device *pdev)
 
 	regulator_put(fb_data->display_regulator);
 	regulator_put(fb_data->vcom_regulator);
+	regulator_put(fb_data->v3p3_regulator);
 
 	unregister_framebuffer(&fb_data->info);
 	free_irq(fb_data->epdc_irq, fb_data);
+
+	for (i = 0; i < fb_data->max_num_buffers; i++)
+		if (fb_data->virt_addr_updbuf[i] != NULL)
+			dma_free_writecombine(&pdev->dev, fb_data->max_pix_size,
+				fb_data->virt_addr_updbuf[i],
+				fb_data->phys_addr_updbuf[i]);
+	if (fb_data->virt_addr_updbuf != NULL)
+		kfree(fb_data->virt_addr_updbuf);
+	if (fb_data->phys_addr_updbuf != NULL)
+		kfree(fb_data->phys_addr_updbuf);
 
 	dma_free_writecombine(&pdev->dev, fb_data->working_buffer_size,
 				fb_data->working_buffer_virt,
@@ -4099,9 +4269,6 @@ static int mxc_epdc_fb_remove(struct platform_device *pdev)
 	list_for_each_entry_safe(plist, temp_list, &fb_data->upd_buf_free_list,
 			list) {
 		list_del(&plist->list);
-		dma_free_writecombine(&pdev->dev, fb_data->max_pix_size,
-				      plist->virt_addr,
-				      plist->phys_addr);
 		kfree(plist);
 	}
 #ifdef CONFIG_FB_MXC_EINK_AUTO_UPDATE_MODE
@@ -4401,6 +4568,10 @@ static int pxp_complete_update(struct mxc_epdc_fb_data *fb_data, u32 *hist_stat)
 		fb_data->pxp_chan = NULL;
 		return ret ? : -ETIMEDOUT;
 	}
+
+	if ((fb_data->pxp_conf.proc_data.lut_transform & EPDC_FLAG_USE_CMAP) &&
+		fb_data->pxp_conf.proc_data.lut_map_updated)
+		fb_data->pxp_conf.proc_data.lut_map_updated = false;
 
 	*hist_stat = to_tx_desc(fb_data->txd)->hist_status;
 	dma_release_channel(&fb_data->pxp_chan->dma_chan);

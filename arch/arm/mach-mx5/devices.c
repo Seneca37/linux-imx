@@ -1,5 +1,5 @@
 /*
- * Copyright 2008-2011 Freescale Semiconductor, Inc. All Rights Reserved.
+ * Copyright 2008-2013 Freescale Semiconductor, Inc. All Rights Reserved.
  */
 
 /*
@@ -35,6 +35,21 @@
 int iram_ready;
 /* Flag used to indicate if dvfs_core is active. */
 int dvfs_core_is_active;
+
+static struct resource mx5_pmu_resources[] = {
+	{
+		.start = MXC_INT_PMU,
+		.end = MXC_INT_PMU,
+		.flags = IORESOURCE_IRQ,
+	},
+};
+
+struct platform_device mx5_pmu_device = {
+	.name = "arm-pmu",
+	.id = 0,
+	.num_resources = ARRAY_SIZE(mx5_pmu_resources),
+	.resource = mx5_pmu_resources,
+};
 
 static struct resource sdma_resources[] = {
 	{
@@ -598,6 +613,11 @@ static struct resource mxcspi1_resources[] = {
 		.flags = IORESOURCE_IRQ,
 	},
 	{
+		.start = MXC_DMA_CSPI1_RX,
+		.end = MXC_DMA_CSPI1_RX,
+		.flags = IORESOURCE_DMA,
+	},
+	{
 		.start = MXC_DMA_CSPI1_TX,
 		.end = MXC_DMA_CSPI1_TX,
 		.flags = IORESOURCE_DMA,
@@ -626,6 +646,11 @@ static struct resource mxcspi2_resources[] = {
 		.start = MXC_INT_CSPI2,
 		.end = MXC_INT_CSPI2,
 		.flags = IORESOURCE_IRQ,
+	},
+	{
+		.start = MXC_DMA_CSPI2_RX,
+		.end = MXC_DMA_CSPI2_RX,
+		.flags = IORESOURCE_DMA,
 	},
 	{
 		.start = MXC_DMA_CSPI2_TX,
@@ -1189,6 +1214,11 @@ struct platform_device ahci_fsl_device = {
 	},
 };
 
+struct platform_device imx_ahci_device_hwmon = {
+	.name		= "imx-ahci-hwmon",
+	.id		= -1,
+};
+
 static u64 usb_dma_mask = DMA_BIT_MASK(32);
 
 static struct resource usbotg_host_resources[] = {
@@ -1407,7 +1437,11 @@ struct platform_device gpu_device = {
 
 struct mxc_gpu_platform_data gpu_data = {
 	.z160_revision = 0,
+#ifdef CONFIG_ANDROID_PMEM
 	.enable_mmu = 0,
+#else
+	.enable_mmu = 1,
+#endif
 };
 
 static struct resource mxc_gpu2d_resources[] = {
@@ -1860,6 +1894,8 @@ int __init mxc_init_devices(void)
 		ssi1_resources[0].end -= MX53_OFFSET;
 		ssi2_resources[0].start -= MX53_OFFSET;
 		ssi2_resources[0].end -= MX53_OFFSET;
+		ssi3_resources[0].start -= MX53_OFFSET;
+		ssi3_resources[0].end -= MX53_OFFSET;
 		esai_resources[0].start -= MX53_OFFSET;
 		esai_resources[0].end -= MX53_OFFSET;
 		tve_resources[0].start -= MX53_OFFSET;

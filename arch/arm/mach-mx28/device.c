@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2009-2011 Freescale Semiconductor, Inc. All Rights Reserved.
+ * Copyright (C) 2009-2013 Freescale Semiconductor, Inc. All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -565,6 +565,7 @@ static struct mxs_mmc_platform_data mmc0_data = {
 	.write_uA       = 70000,
 	.clock_mmc = "ssp.0",
 	.power_mmc = NULL,
+	.fastpath_sz = 1024,
 };
 
 static struct resource mmc0_resource[] = {
@@ -604,6 +605,7 @@ static struct mxs_mmc_platform_data mmc1_data = {
 	.write_uA       = 70000,
 	.clock_mmc = "ssp.1",
 	.power_mmc = NULL,
+	.fastpath_sz = 1024,
 };
 
 static struct resource mmc1_resource[] = {
@@ -1202,8 +1204,12 @@ static ddi_bc_Cfg_t battery_data = {
 	.u8DieTempHigh			 = 75,		/* deg centigrade */
 	.u8DieTempLow			 = 65,		/* deg centigrade */
 	.u16DieTempSafeCurrent		 = 0,		/* mA */
+	.u8DieTempChannel		 = 0,		/* LRADC 0 */
 	.monitorBatteryTemp		 = 0,		/* Monitor the battery*/
-	.u8BatteryTempChannel		 = 0,		/* LRADC 0 */
+  /* There is no free LRADC channel for battery monitor.
+     LRADC 1  is also used for kbd, if LRADC_CH1 is used
+     for battery temperature. kbd device should be disabled */
+  .u8BatteryTempChannel = LRADC_CH1,
 	.u16BatteryTempHigh		 = 642,		/* Unknown units */
 	.u16BatteryTempLow		 = 497,		/* Unknown units */
 	.u16BatteryTempSafeCurrent	 = 0,		/* mA */
@@ -1302,13 +1308,26 @@ static void __init mx28_init_dcp(void)
 #endif
 
 #if defined(CONFIG_SND_MXS_SOC_DAI) || defined(CONFIG_SND_MXS_SOC_DAI_MODULE)
-static int audio_clk_init(struct clk *clk)
+static struct mxs_audio_platform_data audio_plat_data;
+
+static int audio_clk_init(void)
 {
+	struct clk *clk;
+	struct clk *clk1;
 	struct clk *pll_clk;
 	struct clk *saif_mclk0;
 	struct clk *saif_mclk1;
 	int ret = -EINVAL;
+
+	if (audio_plat_data.inited)
+		return 0;
+	clk = clk_get(NULL, "saif.0");
 	if (IS_ERR(clk)) {
+		pr_err("%s:failed to get clk\n", __func__);
+		goto err_clk_init;
+	}
+	clk1 = clk_get(NULL, "saif.1");
+	if (IS_ERR(clk1)) {
 		pr_err("%s:failed to get clk\n", __func__);
 		goto err_clk_init;
 	}
@@ -1332,10 +1351,18 @@ static int audio_clk_init(struct clk *clk)
 		pr_err("%s:failed to set parent clk\n", __func__);
 		goto err_clk_init;
 	}
+	ret = clk_set_parent(clk1, pll_clk);
+	if (ret) {
+		pr_err("%s:failed to set parent clk\n", __func__);
+		goto err_clk_init;
+	}
+
 	ret = 0;
 	/*set a default freq of 12M to sgtl5000*/
 	clk_set_rate(clk, 12000000);
 	clk_enable(clk);
+	clk_set_rate(clk1, 12000000);
+	clk_enable(clk1);
 	/*set the saif clk mux, saif0/saif1 both use saif0 clk*/
 	__raw_writel(BF_DIGCTL_CTRL_SAIF_CLKMUX_SEL(0x2), \
 			IO_ADDRESS(DIGCTL_PHYS_ADDR) + HW_DIGCTL_CTRL);
@@ -1343,6 +1370,15 @@ static int audio_clk_init(struct clk *clk)
 	/*enable saif0/saif1 clk output*/
 	clk_enable(saif_mclk0);
 	clk_enable(saif_mclk1);
+
+  clk_put(clk);
+  clk_put(clk1);
+  clk_put(pll_clk);
+  clk_put(saif_mclk0);
+  clk_put(saif_mclk1);
+
+  audio_plat_data.inited = 1;
+
 err_clk_init:
 	return ret;
 }
@@ -1350,9 +1386,13 @@ err_clk_init:
 static int audio_clk_finit(void)
 {
 	struct clk *saif_clk;
+	struct clk *saif_clk1;
 	struct clk *saif_mclk0;
 	struct clk *saif_mclk1;
 	int ret = 0;
+
+	if (audio_plat_data.inited == 0)
+		return 0;
 	saif_clk = clk_get(NULL, "saif.0");
 	if (IS_ERR(saif_clk)) {
 		pr_err("%s:failed to get saif_clk\n", __func__);
@@ -1360,6 +1400,16 @@ static int audio_clk_finit(void)
 		goto err_clk_finit;
 	}
 	clk_disable(saif_clk);
+  clk_put(saif_clk);
+	saif_clk1 = clk_get(NULL, "saif.1");
+	if (IS_ERR(saif_clk1)) {
+		pr_err("%s:failed to get saif_clk\n", __func__);
+		ret = -EINVAL;
+		goto err_clk_finit;
+	}
+	clk_disable(saif_clk1);
+  clk_put(saif_clk1);
+
 
 	saif_mclk0 = clk_get(NULL, "saif_mclk.0");
 	if (IS_ERR(saif_mclk0)) {
@@ -1367,6 +1417,7 @@ static int audio_clk_finit(void)
 		goto err_clk_finit;
 	}
 	clk_disable(saif_mclk0);
+  clk_put(saif_mclk0);
 
 	saif_mclk1 = clk_get(NULL, "saif_mclk.1");
 	if (IS_ERR(saif_mclk1)) {
@@ -1374,11 +1425,14 @@ static int audio_clk_finit(void)
 		goto err_clk_finit;
 	}
 	clk_disable(saif_mclk1);
+  clk_put(saif_mclk1);
+
+  audio_plat_data.inited = 0;
+
 err_clk_finit:
 	return ret;
 }
 
-static struct mxs_audio_platform_data audio_plat_data;
 #endif
 
 #if defined(CONFIG_SND_SOC_SGTL5000) || defined(CONFIG_SND_SOC_SGTL5000_MODULE)
@@ -1388,10 +1442,16 @@ void __init mx28_init_audio(void)
 	if (pdev == NULL || IS_ERR(pdev))
 		return;
 	mxs_add_device(pdev, 3);
+	audio_plat_data.inited = 0;
 	audio_plat_data.saif_mclock = clk_get(NULL, "saif.0");
-	audio_clk_init(audio_plat_data.saif_mclock);
+	audio_plat_data.saif_mclock1 = clk_get(NULL, "saif.1");
+	audio_plat_data.init = audio_clk_init;
+	audio_plat_data.finit = audio_clk_finit;
+	audio_clk_init();
 	pdev->dev.platform_data = &audio_plat_data;
 }
+
+
 #else
 void __init mx28_init_audio(void)
 {

@@ -395,9 +395,9 @@ static void disable_pwm1_pad(void)
 {
 	mxc_iomux_v3_setup_pad(mx53_ard_pwm_pads[2]);
 
-	gpio_request(ARD_PWM2_OFF, "pwm2-off");
-	gpio_direction_output(ARD_PWM2_OFF, 1);
-	gpio_free(ARD_PWM2_OFF);
+	gpio_request(ARD_PWM1_OFF, "pwm1-off");
+	gpio_direction_output(ARD_PWM1_OFF, 1);
+	gpio_free(ARD_PWM1_OFF);
 }
 
 static struct mxc_pwm_platform_data mxc_pwm1_platform_data = {
@@ -445,15 +445,19 @@ static void flexcan_xcvr_enable(int id, int en)
 	if (id < 0 || id > 1)
 		return;
 
-	if (en)
+	if (en) {
 		gpio_set_value(ARD_CAN_EN, 1);
-	else
+		gpio_set_value(ARD_CAN_STBY, 1);
+	} else {
 		gpio_set_value(ARD_CAN_EN, 0);
+		gpio_set_value(ARD_CAN_STBY, 0);
+	}
 }
 
 static struct flexcan_platform_data flexcan0_data = {
 	.core_reg = NULL,
 	.io_reg = NULL,
+	.root_clk_id = "lp_apm",
 	.xcvr_enable = flexcan_xcvr_enable,
 	.br_clksrc = 1,
 	.br_rjw = 2,
@@ -471,6 +475,7 @@ static struct flexcan_platform_data flexcan0_data = {
 static struct flexcan_platform_data flexcan1_data = {
 	.core_reg = NULL,
 	.io_reg = NULL,
+	.root_clk_id = "lp_apm",
 	.xcvr_enable = flexcan_xcvr_enable,
 	.br_clksrc = 1,
 	.br_rjw = 2,
@@ -797,6 +802,10 @@ static struct i2c_board_info mxc_i2c2_board_info[] __initdata = {
 	.addr = 0x21,
 	.platform_data = (void *)&adv7180_data,
 	 },
+	{
+	.type = "mma8451",
+	.addr = 0x1C,
+	},
 };
 
 static struct mtd_partition mxc_dataflash_partitions[] = {
@@ -1444,6 +1453,7 @@ static void __init mxc_board_init(void)
 	mxc_register_device(&usb_rndis_device, &rndis_data);
 	mxc_register_device(&android_usb_device, &android_usb_data);
 	mxc_register_device(&ahci_fsl_device, &sata_data);
+	mxc_register_device(&imx_ahci_device_hwmon, NULL);
 
 	/* ASRC is only available for MX53 TO2.0 */
 	if (mx53_revision() >= IMX_CHIP_REVISION_2_0) {

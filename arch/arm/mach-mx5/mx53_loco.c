@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010-2011 Freescale Semiconductor, Inc. All Rights Reserved.
+ * Copyright (C) 2010-2013 Freescale Semiconductor, Inc. All Rights Reserved.
  */
 
 /*
@@ -108,7 +108,8 @@
 #define USER_LED_EN			(6*32 + 7)	/* GPIO_7_7 */
 #define USB_PWREN			(6*32 + 8)	/* GPIO_7_8 */
 #define NIRQ				(6*32 + 11)	/* GPIO7_11 */
-#define MX53_LOCO_MC34708_IRQ    (4*32 + 30)	/* GPIO5_30 CSI0_DAT12 */
+#define MX53_LOCO_MC34708_IRQ_REVA    (4*32 + 30)	/* GPIO5_30 */
+#define MX53_LOCO_MC34708_IRQ_REVB    (4*32 + 23)	/* GPIO5_23 */
 
 #define MX53_OFFSET					(0x20000000)
 #define TZIC_WAKEUP0_OFFSET         (0x0E00)
@@ -118,6 +119,7 @@
 #define GPIO7_0_11_IRQ_BIT			(0x1<<11)
 
 extern void pm_i2c_init(u32 base_addr);
+static u32 mx53_loco_mc34708_irq;
 static iomux_v3_cfg_t mx53_loco_pads[] = {
 	/* FEC */
 	MX53_PAD_FEC_MDC__FEC_MDC,
@@ -484,9 +486,27 @@ static void sii902x_hdmi_reset(void)
 	msleep(10);
 }
 
+static int sii902x_get_pins(void)
+{
+	/* Sii902x HDMI controller */
+	gpio_request(DISP0_RESET, "disp0-reset");
+	gpio_direction_output(DISP0_RESET, 0);
+	gpio_request(DISP0_DET_INT, "disp0-detect");
+	gpio_direction_input(DISP0_DET_INT);
+	return 1;
+}
+
+static void sii902x_put_pins(void)
+{
+	gpio_free(DISP0_RESET);
+	gpio_free(DISP0_DET_INT);
+}
+
 static struct mxc_lcd_platform_data sii902x_hdmi_data = {
-       .reset = sii902x_hdmi_reset,
-       .fb_id = "DISP3 BG",
+	.reset = sii902x_hdmi_reset,
+	.fb_id = "DISP3 BG",
+	.get_pins = sii902x_get_pins,
+	.put_pins = sii902x_put_pins,
 };
 
 static struct imxi2c_platform_data mxci2c_data = {
@@ -573,7 +593,7 @@ static struct mxc_mmc_platform_data mmc3_data = {
 	.caps = MMC_CAP_4_BIT_DATA | MMC_CAP_8_BIT_DATA
 		| MMC_CAP_DATA_DDR,
 	.min_clk = 400000,
-	.max_clk = 50000000,
+	.max_clk = 45000000,
 	.card_inserted_state = 0,
 	.status = sdhc_get_card_det_status,
 	.wp_status = sdhc_write_protect,
@@ -907,6 +927,28 @@ static void __init fixup_mxc_board(struct machine_desc *desc, struct tag *tags,
 	}
 }
 
+static struct gpio_led gpio_leds[] = {
+	{
+		.name			= "USR",
+		.default_trigger	= "heartbeat",
+		.active_low		= 0,
+		.gpio			= USER_LED_EN,
+	},
+};
+
+static struct gpio_led_platform_data gpio_led_info = {
+	.leds		= gpio_leds,
+	.num_leds	= ARRAY_SIZE(gpio_leds),
+};
+
+static struct platform_device leds_gpio = {
+	.name	= "leds-gpio",
+	.id	= -1,
+	.dev	= {
+		.platform_data	= &gpio_led_info,
+	},
+};
+
 static void __init mx53_loco_io_init(void)
 {
 	mxc_iomux_v3_setup_multiple_pads(mx53_loco_pads,
@@ -933,16 +975,14 @@ static void __init mx53_loco_io_init(void)
 	gpio_request(USB_PWREN, "usb-pwr");
 	gpio_direction_output(USB_PWREN, 0);
 
-	/* Sii902x HDMI controller */
-	gpio_request(DISP0_RESET, "disp0-reset");
-	gpio_direction_output(DISP0_RESET, 0);
-	gpio_request(DISP0_DET_INT, "disp0-detect");
-	gpio_direction_input(DISP0_DET_INT);
-
 	/* LCD panel power enable */
 	gpio_request(DISP0_POWER_EN, "disp0-power-en");
 	gpio_direction_output(DISP0_POWER_EN, 1);
 
+	/* USR LED */
+	gpio_request(USER_LED_EN, "user-led-en");
+	gpio_direction_output(USER_LED_EN, 1);
+	gpio_free(USER_LED_EN);
 }
 
 /*!
@@ -951,7 +991,7 @@ static void __init mx53_loco_io_init(void)
 static void __init mxc_board_init(void)
 {
 
-	iomux_v3_cfg_t mc34708_int;
+	iomux_v3_cfg_t mc34708_int = MX53_PAD_CSI0_DAT12__GPIO5_30;
 	iomux_v3_cfg_t da9052_csi0_d12;
 
 	mxc_ipu_data.di_clk[0] = clk_get(NULL, "ipu_di0_clk");
@@ -971,21 +1011,27 @@ static void __init mxc_board_init(void)
 	mxc_register_device(&mxci2c_devices[0], &mxci2c_data);
 	mxc_register_device(&mxci2c_devices[1], &mxci2c_data);
 	mxc_register_device(&mxci2c_devices[2], &mxci2c_data);
+	mxc_register_device(&mx5_pmu_device, NULL);
 
-    if (board_is_mx53_loco_mc34708()) {
+	if (board_is_mx53_loco_mc34708()) {
 		/* set pmic INT gpio pin */
-		mc34708_int = MX53_PAD_CSI0_DAT12__GPIO5_30;
+		if (board_is_rev(BOARD_REV_2)) {/*Board rev A*/
+			mc34708_int = MX53_PAD_CSI0_DAT12__GPIO5_30;
+			mx53_loco_mc34708_irq = MX53_LOCO_MC34708_IRQ_REVA;
+		} else if (board_is_rev(BOARD_REV_4)) {/*Board rev B*/
+			mc34708_int = MX53_PAD_CSI0_DAT5__GPIO5_23;
+			mx53_loco_mc34708_irq = MX53_LOCO_MC34708_IRQ_REVB;
+		}
 		mxc_iomux_v3_setup_pad(mc34708_int);
-		gpio_request(MX53_LOCO_MC34708_IRQ, "pmic-int");
-		gpio_direction_input(MX53_LOCO_MC34708_IRQ);
-		mx53_loco_init_mc34708();
+		gpio_request(mx53_loco_mc34708_irq, "pmic-int");
+		gpio_direction_input(mx53_loco_mc34708_irq);
+		mx53_loco_init_mc34708(mx53_loco_mc34708_irq);
 		dvfs_core_data.reg_id = "SW1A";
 		tve_data.dac_reg = "VDAC";
 		bus_freq_data.gp_reg_id = "SW1A";
 		bus_freq_data.lp_reg_id = "SW2";
 		mxc_register_device(&mxc_powerkey_device, &pwrkey_data);
-	}
-    else {
+	} else {
 		da9052_csi0_d12 = MX53_PAD_CSI0_DAT12__IPU_CSI0_D_12;
 		mxc_iomux_v3_setup_pad(da9052_csi0_d12);
 		mx53_loco_init_da9052();
@@ -1022,6 +1068,7 @@ static void __init mxc_board_init(void)
 	mxc_register_device(&usb_rndis_device, &rndis_data);
 	mxc_register_device(&android_usb_device, &android_usb_data);
 	mxc_register_device(&ahci_fsl_device, &sata_data);
+	mxc_register_device(&imx_ahci_device_hwmon, NULL);
 	mxc_register_device(&mxc_fec_device, &fec_data);
 	mxc_register_device(&mxc_ptp_device, NULL);
 	/* ASRC is only available for MX53 TO2.0 */
@@ -1056,6 +1103,7 @@ static void __init mxc_board_init(void)
 	loco_add_device_buttons();
 	pm_power_off = da9053_power_off;
 	pm_i2c_init(I2C1_BASE_ADDR - MX53_OFFSET);
+	platform_device_register(&leds_gpio);
 }
 
 static void __init mx53_loco_timer_init(void)

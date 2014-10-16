@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2009-2011 Freescale Semiconductor, Inc. All Rights Reserved.
+ * Copyright (C) 2009-2012 Freescale Semiconductor, Inc. All Rights Reserved.
  */
 
 /*
@@ -239,15 +239,24 @@ void enter_lpapm_mode_mx50()
 	spin_unlock_irqrestore(&voltage_lock, flags);
 
 	if (clk_get_usecount(pll1_sw_clk) == 1) {
-		/* Relock PLL1 to 160MHz. */
+		spin_lock_irqsave(&freq_lock, flags);
+		/* Relock PLL1 to 160MHz(166MHz). */
 		clk_set_parent(pll1_sw_clk, pll2);
 		/* Set the divider to ARM_PODF to 3. */
 		__raw_writel(0x02, MXC_CCM_CACRR);
+		while (__raw_readl(MXC_CCM_CDHIPR) &
+			MXC_CCM_CDHIPR_ARM_PODF_BUSY)
+			;
 
 		clk_set_rate(pll1, cpu_wp_tbl[cpu_wp_nr - 1].cpu_rate);
 		clk_set_parent(pll1_sw_clk, pll1);
 		/* Set the divider to ARM_PODF to 1. */
 		__raw_writel(0x0, MXC_CCM_CACRR);
+		while (__raw_readl(MXC_CCM_CDHIPR) &
+			MXC_CCM_CDHIPR_ARM_PODF_BUSY)
+			;
+
+		spin_unlock_irqrestore(&freq_lock, flags);
 	}
 	udelay(100);
 }
@@ -342,6 +351,7 @@ void enter_lpapm_mode_mx53()
 	u32 reg;
 	struct timespec nstimeofday;
 	struct timespec curtime;
+	unsigned long flags;
 
 	/* TBD: Reduce DDR frequency for DDR2 */
 	/* if (mx53_ddr_type == DDR_TYPE_DDR2) {
@@ -349,22 +359,17 @@ void enter_lpapm_mode_mx53()
 
 	/* move cpu clk to pll2, 400 / 1 = 400MHZ for cpu  */
 	/* Change the source of pll1_sw_clk to be the step_clk */
+	spin_lock_irqsave(&freq_lock, flags);
 	reg = __raw_readl(MXC_CCM_CCSR);
 	reg |= MXC_CCM_CCSR_PLL1_SW_CLK_SEL;
 	__raw_writel(reg, MXC_CCM_CCSR);
 
 	cpu_podf = __raw_readl(MXC_CCM_CACRR);
-	reg = __raw_readl(MXC_CCM_CDHIPR);
-	while (1) {
-		if ((reg & MXC_CCM_CDHIPR_ARM_PODF_BUSY) == 0) {
-			__raw_writel(0x0, MXC_CCM_CACRR);
-			break;
-		} else {
-			reg = __raw_readl(MXC_CCM_CDHIPR);
-			printk(KERN_DEBUG "ARM_PODF still in busy!!!!\n");
-		}
-	}
+	__raw_writel(0x2, MXC_CCM_CACRR);
+	while (__raw_readl(MXC_CCM_CDHIPR) & MXC_CCM_CDHIPR_ARM_PODF_BUSY)
+		;
 	clk_set_parent(pll1_sw_clk, pll2);
+	spin_unlock_irqrestore(&freq_lock, flags);
 
 	/* ahb = pll2/8, axi_b = pll2/8, axi_a = pll2/1*/
 	reg = __raw_readl(MXC_CCM_CBCDR);
@@ -524,17 +529,31 @@ void exit_lpapm_mode_mx50(int high_bus_freq)
 	unsigned long flags;
 
 	if (clk_get_usecount(pll1_sw_clk) == 1) {
-		/* Relock PLL1 to 800MHz. */
+		/* Relock PLL1 to 800MHz(1000MHz). */
 		clk_set_parent(pll1_sw_clk, pll2);
 		/* Set the divider to ARM_PODF to 3, cpu is at 160MHz. */
+		spin_lock_irqsave(&freq_lock, flags);
+
 		__raw_writel(0x02, MXC_CCM_CACRR);
+		while (__raw_readl(MXC_CCM_CDHIPR) &
+			MXC_CCM_CDHIPR_ARM_PODF_BUSY)
+			;
+
+		spin_unlock_irqrestore(&freq_lock, flags);
 
 		clk_set_rate(pll1, cpu_wp_tbl[0].pll_rate);
 
-		/* Set the divider to ARM_PODF to 5 before
-		  * switching the parent.
-		  */
-		__raw_writel(0x4, MXC_CCM_CACRR);
+		/*
+		 * Set the divider to ARM_PODF to
+		 * cpu_wp_tbl[cpu_wp_nr-1].cpu_podf before switching the parent.
+		 */
+		spin_lock_irqsave(&freq_lock, flags);
+		__raw_writel(cpu_wp_tbl[cpu_wp_nr - 1].cpu_podf, MXC_CCM_CACRR);
+		while (__raw_readl(MXC_CCM_CDHIPR) &
+			MXC_CCM_CDHIPR_ARM_PODF_BUSY)
+			;
+
+		spin_unlock_irqrestore(&freq_lock, flags);
 		clk_set_parent(pll1_sw_clk, pll1);
 	}
 
@@ -718,21 +737,15 @@ void exit_lpapm_mode_mx53()
 	u32 reg;
 	struct timespec nstimeofday;
 	struct timespec curtime;
-
+	unsigned long flags;
 
 	/* move cpu clk to pll1 */
-	reg = __raw_readl(MXC_CCM_CDHIPR);
-	while (1) {
-		if ((reg & MXC_CCM_CDHIPR_ARM_PODF_BUSY) == 0) {
-			__raw_writel(cpu_podf & 0x7, MXC_CCM_CACRR);
-			break;
-		} else {
-			reg = __raw_readl(MXC_CCM_CDHIPR);
-			printk(KERN_DEBUG "ARM_PODF still in busy!!!!\n");
-		}
-	}
+	spin_lock_irqsave(&freq_lock, flags);
+	__raw_writel(cpu_podf & 0x7, MXC_CCM_CACRR);
+	while (__raw_readl(MXC_CCM_CDHIPR) & MXC_CCM_CDHIPR_ARM_PODF_BUSY)
+		;
 	clk_set_parent(pll1_sw_clk, pll1);
-
+	spin_unlock_irqrestore(&freq_lock, flags);
 
 	/* ahb = 400/3, axi_b = 400/2, axi_a = 400*/
 	reg = __raw_readl(MXC_CCM_CBCDR);
@@ -1019,9 +1032,12 @@ static int __devinit busfreq_probe(struct platform_device *pdev)
 			ddr_normal_rate = clk_get_rate(ddr_clk);
 			lp_med_rate = pll2_rate / 6;
 			ddr_low_rate = LP_APM_CLK;
-			if (mx50_ddr_type == MX50_LPDDR2)
-				ddr_med_rate = pll2_rate / 3;
-			else
+			if (mx50_ddr_type == MX50_LPDDR2) {
+				if (pll1_rate == 1000000000)
+					ddr_med_rate = pll1_rate / 8; /* LPDDR2@125MHz */
+				else
+					ddr_med_rate = pll1_rate / 6; /* LPDDR2@133MHz */
+			} else
 				/* mDDR @ 133Mhz currently does not work */
 				ddr_med_rate = ddr_normal_rate;
 		}

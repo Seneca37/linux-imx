@@ -216,7 +216,6 @@ static void mma8451_dev_poll(struct input_polled_dev *dev)
 {
 	if (!mma_status.stop_poll)
 		report_abs();
-	report_abs();
 }
 
 static int __devinit mma8451_probe(struct i2c_client *client,

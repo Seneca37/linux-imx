@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2011 Freescale Semiconductor, Inc. All Rights Reserved.
+ * Copyright (C) 2004-2012 Freescale Semiconductor, Inc. All Rights Reserved.
  */
 
 /*
@@ -468,6 +468,7 @@ static inline int sdma_asrc_set_info(dma_channel_params *p,
 			return wml;
 		wml1 = p->watermark_level;
 		wml2 = ep->watermark_level2;
+		/* asrc watermake is set as per channel */
 		if (info->channs) {
 			wml |= (info->channs & SDMA_ASRC_INFO_N_MASK) <<
 			    SDMA_ASRC_INFO_N_OFF;
@@ -476,7 +477,11 @@ static inline int sdma_asrc_set_info(dma_channel_params *p,
 			else
 				wml1 *= info->channs & SDMA_ASRC_INFO_N_MASK;
 		}
+
 		if (info->channs & 1) {
+			wml |= (info->channs & SDMA_ASRC_INFO_N_MASK) <<
+			    SDMA_ASRC_INFO_N_OFF;
+
 			if (ep->p2p_dir)
 				wml |= SDMA_ASRC_P2P_INFO_PS;
 			else
@@ -584,21 +589,24 @@ static int sdma_load_context(int channel, dma_channel_params *p)
 				}
 			}
 
-			if (p->ext)
+			if (p->ext && p->peripheral_type == ASRC) {
 				context.wml = ep->info_bits;
-			/* Watermark Level */
-			context.wml |= event2_greater_than_32 |
-				event1_greater_than_32 | p->watermark_level;
 
+				context.wml |= sdma_asrc_set_info(p,
+						&context,
+						event2_greater_than_32 |
+						event1_greater_than_32);
+			} else {
+				/* Watermark Level */
+				context.wml |= event2_greater_than_32 |
+				event1_greater_than_32 | p->watermark_level;
+			}
 			/* Address */
 			context.shp_addr = (unsigned long)(p->per_address);
 			if (p->ext)
 				context.per_addr = ep->per_address2;
 			iapi_IoCtl(sdma_data[channel].cd,
 				   IAPI_CHANGE_PERIPHADDR, p->per_address);
-		} else {
-			BUG(); /* Need a real address, not the beginning of RAM
-			context.wml = M3_BASE_ADDRESS; */
 		}
 
 		sdma_data[channel].transfer_type = p->transfer_type;
@@ -1434,12 +1442,24 @@ int sdma_probe(struct platform_device *pdev)
 	int irq;
 	struct resource *rsrc;
 	configs_data confreg_data;
+	char *ddr_clk_name = "emi_fast_clk";
+	struct clk *mem_clock;
+
+	if (cpu_is_mx50())
+		ddr_clk_name = "ddr_clk";
 
 	/* Initialize to the default values */
 	confreg_data = iapi_ConfigDefaults;
 
 	confreg_data.dspdma = 0;
 	/* Set ACR bit */
+	mem_clock = clk_get(&pdev->dev, ddr_clk_name);
+	if (!mem_clock) {
+		printk(KERN_ERR"can't get ddr memory clock\n");
+		return -ENODEV;
+	}
+
+	clk_enable(mem_clock);
 	mxc_sdma_ahb_clk = clk_get(&pdev->dev, "sdma_ahb_clk");
 	mxc_sdma_ipg_clk = clk_get(&pdev->dev, "sdma_ipg_clk");
 	clk_enable(mxc_sdma_ahb_clk);
@@ -1499,12 +1519,14 @@ int sdma_probe(struct platform_device *pdev)
 
 	clk_disable(mxc_sdma_ahb_clk);
 	clk_disable(mxc_sdma_ipg_clk);
+	clk_disable(mem_clock);
 	return res;
 
       sdma_init_fail:
 	printk(KERN_ERR "Error 0x%x in sdma_init\n", res);
 	clk_disable(mxc_sdma_ahb_clk);
 	clk_disable(mxc_sdma_ipg_clk);
+	clk_disable(mem_clock);
 	return res;
 }
 

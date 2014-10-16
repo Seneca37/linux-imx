@@ -1,5 +1,5 @@
 /*
- * Copyright 2005-2010 Freescale Semiconductor, Inc. All Rights Reserved.
+ * Copyright 2005-2013 Freescale Semiconductor, Inc. All Rights Reserved.
  */
 
 /*
@@ -77,12 +77,12 @@ typedef struct _vout_data {
 	 */
 	struct semaphore param_lock;
 
-	struct timer_list output_timer;
+	struct hrtimer output_timer;
 	struct workqueue_struct *v4l_wq;
 	struct work_struct icbypass_work;
 	int disp_buf_num;
 	int fb_blank;
-	unsigned long start_jiffies;
+	ktime_t start_ktime;
 	u32 frame_count;
 
 	v4l_queue ready_q;
@@ -91,7 +91,7 @@ typedef struct _vout_data {
 	s8 next_rdy_ipu_buf;
 	s8 next_done_ipu_buf;
 	s8 next_disp_ipu_buf;
-	s8 ipu_buf[2];
+	s8 ipu_buf[3];
 	s8 ipu_buf_p[2];
 	s8 ipu_buf_n[2];
 	volatile v4lout_state state;

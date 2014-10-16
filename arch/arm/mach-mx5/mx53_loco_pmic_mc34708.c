@@ -73,7 +73,7 @@
 					| SW4B_MODE_VALUE | SW5_MODE_VALUE)
 
 #define SWBST_MODE_MASK		(0x3 << 5)
-#define SWBST_MODE_VALUE	(0x0 << 5)
+#define SWBST_MODE_VALUE	(0x2 << 5)	/*Auto mode*/
 
 #define REG_SWBST_MODE_MASK	(SWBST_MODE_MASK)
 #define REG_SWBST_MODE_VALUE	(SWBST_MODE_VALUE)
@@ -285,6 +285,11 @@ static int mc34708_regulator_init(struct mc34708 *mc34708)
 	value &= ~SWHOLD_MASK;
 	pmic_write_reg(REG_MC34708_USB_CONTROL, value, 0xffffff);
 
+	/* enable WDI reset*/
+	pmic_read_reg(REG_MC34708_POWER_CTL2, &value, 0xffffff);
+	value |= 0x1000;
+	pmic_write_reg(REG_MC34708_POWER_CTL2, value, 0xffffff);
+
 	mc34708_register_regulator(mc34708, MC34708_SW1A, &sw1a_init);
 	mc34708_register_regulator(mc34708, MC34708_SW1B, &sw1b_init);
 	mc34708_register_regulator(mc34708, MC34708_SW2, &sw2_init);
@@ -312,11 +317,11 @@ static struct mc34708_platform_data mc34708_plat = {
 
 static struct i2c_board_info __initdata mc34708_i2c_device = {
 	I2C_BOARD_INFO(MC34708_I2C_DEVICE_NAME, MC34708_I2C_ADDR),
-	.irq = gpio_to_irq(MX53_LOCO_MC34708_IRQ),
 	.platform_data = &mc34708_plat,
 };
 
-int __init mx53_loco_init_mc34708(void)
+int __init mx53_loco_init_mc34708(u32 int_gpio)
 {
+	mc34708_i2c_device.irq = gpio_to_irq(int_gpio);/*update INT gpio*/
 	return i2c_register_board_info(0, &mc34708_i2c_device, 1);
 }

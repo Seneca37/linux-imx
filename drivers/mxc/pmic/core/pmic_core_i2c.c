@@ -54,9 +54,6 @@
 #define MC13892_GEN_ID_VALUE	    0x7
 #define MC13892_IC_ID_VALUE		    1
 
-#define MC34708_GEN_ID_VALUE	    0x91
-#define MC34708_GENERATION_ID_LSH	0
-#define MC34708_GENERATION_ID_WID	9
 /*
  * Global variables
  */
@@ -97,16 +94,32 @@ static struct platform_device bleds_ldm = {
 	.name = "pmic_leds",
 	.id = 'b',
 };
+static struct platform_device pwm1_ldm = {
+	.name = "pmic_pwm",
+	.id = 0,
+};
+static struct platform_device pwm2_ldm = {
+	.name = "pmic_pwm",
+	.id = 1,
+};
 
 enum pmic_id {
+#if defined(CONFIG_MXC_PMIC_MC13892) || defined(CONFIG_MXC_PMIC_MC13892_MODULE)
 	PMIC_ID_MC13892,
+#endif
+#if defined(CONFIG_MXC_PMIC_MC34708) || defined(CONFIG_MXC_PMIC_MC34708_MODULE)
 	PMIC_ID_MC34708,
+#endif
 	PMIC_ID_INVALID,
 };
 
 static struct pmic_internal pmic_internal[] = {
+#if defined(CONFIG_MXC_PMIC_MC13892) || defined(CONFIG_MXC_PMIC_MC13892_MODULE)
 	[PMIC_ID_MC13892] = _PMIC_INTERNAL_INITIALIZER(mc13892),
+#endif
+#if defined(CONFIG_MXC_PMIC_MC34708) || defined(CONFIG_MXC_PMIC_MC34708_MODULE)
 	[PMIC_ID_MC34708] = _PMIC_INTERNAL_INITIALIZER(mc34708),
+#endif
 };
 
 static int get_index_pmic_internal(const char *name)
@@ -178,6 +191,8 @@ static void pmic_pdev_register(struct device *dev)
 	platform_device_register(&rleds_ldm);
 	platform_device_register(&gleds_ldm);
 	platform_device_register(&bleds_ldm);
+	platform_device_register(&pwm1_ldm);
+	platform_device_register(&pwm2_ldm);
 }
 
 /*!
@@ -191,6 +206,8 @@ static void pmic_pdev_unregister(void)
 	platform_device_unregister(&rtc_ldm);
 	platform_device_unregister(&power_ldm);
 	platform_device_unregister(&light_ldm);
+	platform_device_unregister(&pwm1_ldm);
+	platform_device_unregister(&pwm2_ldm);
 }
 
 static int __devinit is_chip_onboard(struct i2c_client *client)
@@ -200,15 +217,6 @@ static int __devinit is_chip_onboard(struct i2c_client *client)
 	/*bind the right device to the driver */
 	if (pmic_i2c_24bit_read(client, REG_IDENTIFICATION, &ret) == -1)
 		return -1;
-	if ((MC13892_GEN_ID_VALUE != BITFEXT(ret, MC13892_GENERATION_ID)) &&
-	   (MC34708_GEN_ID_VALUE != BITFEXT(ret, MC34708_GENERATION_ID))) {
-		/*compare the address value */
-		dev_err(&client->dev,
-			"read generation ID 0x%x is not equal to 0x%x!\n",
-			BITFEXT(ret, MC13892_GENERATION_ID),
-			MC13892_GEN_ID_VALUE);
-		return -1;
-	}
 
 	return 0;
 }
@@ -297,6 +305,8 @@ static int __devinit pmic_probe(struct i2c_client *client,
 	battery_ldm.name = get_client_device_name(name, "%s_battery");
 	light_ldm.name = get_client_device_name(name, "%s_light");
 	rtc_ldm.name = get_client_device_name(name, "%s_rtc");
+	pwm1_ldm.name = get_client_device_name(name, "%s_pwm");
+	pwm2_ldm.name = get_client_device_name(name, "%s_pwm");
 
 	i2c_set_clientdata(client,
 		pmic_internal[pmic_index].pmic_alloc_data(&client->dev));

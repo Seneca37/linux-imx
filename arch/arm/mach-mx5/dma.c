@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2008-2011 Freescale Semiconductor, Inc. All Rights Reserved.
+ *  Copyright (C) 2008-2012 Freescale Semiconductor, Inc. All Rights Reserved.
  */
 
 /*
@@ -986,8 +986,8 @@ static mxc_sdma_channel_ext_params_t mxc_sdma_asrca_ssi2_tx0_params = {
 				       SSI2_BASE_ADDR + MXC_SSI_TX0_REG,
 				       .peripheral_type = ASRC,
 				       .transfer_type = per_2_per,
-				       .event_id = DMA_REQ_SSI2_TX1,
-				       .event_id2 = DMA_REQ_ASRC_DMA4,
+				       .event_id2 = DMA_REQ_SSI2_TX1,
+				       .event_id = DMA_REQ_ASRC_DMA4,
 				       .bd_number = 32,
 				       .word_size = TRANSFER_32BIT,
 				       .ext = 1,
@@ -1265,6 +1265,20 @@ static mxc_sdma_channel_params_t mxc_sdma_esai_24bit_tx_params = {
 	.chnl_priority = MXC_SDMA_DEFAULT_PRIORITY,
 };
 
+static mxc_sdma_channel_params_t mxc_sdma_cspi1_rx_params = {
+	.chnl_params = {
+			.watermark_level = 32,
+			.per_address = CSPI1_BASE_ADDR,
+			.peripheral_type = CSPI,
+			.transfer_type = per_2_emi,
+			.event_id = DMA_REQ_CSPI1_RX,
+			.bd_number = 16,
+			.word_size = TRANSFER_32BIT,
+			},
+	.channel_num = MXC_DMA_CHANNEL_CSPI1_RX,
+	.chnl_priority = MXC_SDMA_DEFAULT_PRIORITY,
+};
+
 static mxc_sdma_channel_params_t mxc_sdma_cspi1_tx_params = {
 	.chnl_params = {
 			.watermark_level = 32,
@@ -1276,6 +1290,20 @@ static mxc_sdma_channel_params_t mxc_sdma_cspi1_tx_params = {
 			.word_size = TRANSFER_32BIT,
 			},
 	.channel_num = MXC_DMA_CHANNEL_CSPI1_TX,
+	.chnl_priority = MXC_SDMA_DEFAULT_PRIORITY,
+};
+
+static mxc_sdma_channel_params_t mxc_sdma_cspi2_rx_params = {
+	.chnl_params = {
+			.watermark_level = 32,
+			.per_address = CSPI2_BASE_ADDR,
+			.peripheral_type = CSPI,
+			.transfer_type = per_2_emi,
+			.event_id = DMA_REQ_CSPI2_RX,
+			.bd_number = 16,
+			.word_size = TRANSFER_32BIT,
+			},
+	.channel_num = MXC_DMA_CHANNEL_CSPI2_RX,
 	.chnl_priority = MXC_SDMA_DEFAULT_PRIORITY,
 };
 
@@ -1371,7 +1399,9 @@ static mxc_sdma_info_entry_t mxc_sdma_active_dma_info[] = {
 	{MXC_DMA_ESAI_16BIT_TX, &mxc_sdma_esai_16bit_tx_params},
 	{MXC_DMA_ESAI_24BIT_RX, &mxc_sdma_esai_24bit_rx_params},
 	{MXC_DMA_ESAI_24BIT_TX, &mxc_sdma_esai_24bit_tx_params},
+	{MXC_DMA_CSPI1_RX, &mxc_sdma_cspi1_rx_params},
 	{MXC_DMA_CSPI1_TX, &mxc_sdma_cspi1_tx_params},
+	{MXC_DMA_CSPI2_RX, &mxc_sdma_cspi2_rx_params},
 	{MXC_DMA_CSPI2_TX, &mxc_sdma_cspi2_tx_params},
 };
 
@@ -1623,12 +1653,12 @@ static void __init mx53_sdma_get_script_info(sdma_script_start_addrs *sdma_scrip
 	sdma_script_addr->mxc_sdma_mcu_2_firi_addr = mcu_2_firi_ADDR_MX53;
 
 	/* uart */
-	sdma_script_addr->mxc_sdma_uart_2_per_addr = uart_2_mcu_ADDR_MX53;
-	sdma_script_addr->mxc_sdma_uart_2_mcu_addr = uart_2_mcu_ADDR_MX53;
+	sdma_script_addr->mxc_sdma_uart_2_per_addr = uart_2_mcu_ext_ADDR_MX53;
+	sdma_script_addr->mxc_sdma_uart_2_mcu_addr = uart_2_mcu_ext_ADDR_MX53;
 
 	/* UART SH */
-	sdma_script_addr->mxc_sdma_uartsh_2_per_addr = uartsh_2_mcu_ADDR_MX53;
-	sdma_script_addr->mxc_sdma_uartsh_2_mcu_addr = uartsh_2_mcu_ADDR_MX53;
+	sdma_script_addr->mxc_sdma_uartsh_2_per_addr = uartsh_2_mcu_ext_ADDR_MX53;
+	sdma_script_addr->mxc_sdma_uartsh_2_mcu_addr = uartsh_2_mcu_ext_ADDR_MX53;
 
 	/* SHP */
 	sdma_script_addr->mxc_sdma_per_2_shp_addr = mcu_2_shp_ADDR_MX53;
@@ -1671,7 +1701,7 @@ static void __init mx53_sdma_get_script_info(sdma_script_start_addrs *sdma_scrip
 	sdma_script_addr->mxc_sdma_mcu_2_ssish_addr = mcu_2_ssish_ADDR_MX53;
 	sdma_script_addr->mxc_sdma_ssish_2_mcu_addr = ssish_2_mcu_ADDR_MX53;
 #endif
-
+	sdma_script_addr->mxc_sdma_per_2_per_addr = p_2_p_ADDR_MX53;
 	/* core */
 	sdma_script_addr->mxc_sdma_start_addr = (unsigned short *)sdma_code_mx53;
 	sdma_script_addr->mxc_sdma_ram_code_start_addr = RAM_CODE_START_ADDR_MX53;

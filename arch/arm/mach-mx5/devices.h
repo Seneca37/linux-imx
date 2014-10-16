@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010-2011 Freescale Semiconductor, Inc. All Rights Reserved.
+ * Copyright (C) 2010-2013 Freescale Semiconductor, Inc. All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -61,6 +61,7 @@ extern struct platform_device mxcsdhc2_device;
 extern struct platform_device mxcsdhc3_device;
 extern struct platform_device ahci_fsl_device;
 extern struct ahci_platform_data sata_data;
+extern struct platform_device imx_ahci_device_hwmon;
 extern struct platform_device pata_fsl_device;
 extern struct platform_device fsl_otp_device;
 extern struct platform_device gpu_device;
@@ -96,5 +97,6 @@ extern struct platform_device fixed_volt_reg_device;
 extern struct platform_device mxc_zq_calib_device;
 extern struct platform_device mxc_asrc_device;
 extern struct platform_device mxc_perfmon;
+extern struct platform_device mx5_pmu_device;
 extern struct mxs_platform_perfmon_data mxc_perfmon_data;
 extern struct mxc_gpu_platform_data gpu_data;

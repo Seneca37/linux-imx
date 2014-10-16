@@ -4,7 +4,7 @@
  * Copyright (C) 2004 - 2005 Nokia corporation
  * Written by Tuukka Tikkanen <tuukka.tikkanen@elektrobit.com>
  * Modified for omap shared clock framework by Tony Lindgren <tony@atomide.com>
- * Copyright 2007-2011 Freescale Semiconductor, Inc.
+ * Copyright 2007-2012 Freescale Semiconductor, Inc.
  * Copyright 2008 Juergen Beisert, kernel@pengutronix.de
  *
  * This program is free software; you can redistribute it and/or
@@ -181,9 +181,18 @@ int clk_enable(struct clk *clk)
 	if (clk == NULL || IS_ERR(clk))
 		return -EINVAL;
 
+#ifdef CONFIG_ARCH_MX5
+	spin_lock_irqsave(&clockfw_lock, flags);
+
+	if (clk->flags & AHB_HIGH_SET_POINT)
+		lp_high_freq++;
+	else if (clk->flags & AHB_MED_SET_POINT)
+		lp_med_freq++;
+
+	spin_unlock_irqrestore(&clockfw_lock, flags);
+
 	if ((clk->flags & CPU_FREQ_TRIG_UPDATE)
 			&& (clk_get_usecount(clk) == 0)) {
-#if (defined(CONFIG_ARCH_MX5) || defined(CONFIG_ARCH_MX37))
 		if (!(clk->flags &
 			(AHB_HIGH_SET_POINT | AHB_MED_SET_POINT)))  {
 			if (low_freq_bus_used() && !low_bus_freq_mode)
@@ -200,9 +209,8 @@ int clk_enable(struct clk *clk)
 				  */
 				set_high_bus_freq(1);
 		}
-#endif
 	}
-
+#endif
 
 	spin_lock_irqsave(&clockfw_lock, flags);
 
@@ -235,10 +243,16 @@ void clk_disable(struct clk *clk)
 
 	__clk_disable(clk);
 
+#ifdef CONFIG_ARCH_MX5
+	if (clk->flags & AHB_HIGH_SET_POINT)
+		lp_high_freq--;
+	else if (clk->flags & AHB_MED_SET_POINT)
+		lp_med_freq--;
+#endif
 	spin_unlock_irqrestore(&clockfw_lock, flags);
 
 	if ((clk->flags & CPU_FREQ_TRIG_UPDATE)
-			&& (clk_get_usecount(clk) == 0)) {
+			&& (clk->usecount == 0)) {
 #if (defined(CONFIG_ARCH_MX5) || defined(CONFIG_ARCH_MX37))
 		if (low_freq_bus_used() && !low_bus_freq_mode)
 			set_low_bus_freq();
@@ -470,10 +484,20 @@ static int mxc_proc_clocks_seq_show(struct seq_file *file, void *data)
 {
 	int            result;
 	struct mxc_clk     *clock = (struct mxc_clk *) data;
+	struct clk     *parent = clock->reg_clk->parent;
 	unsigned int   longest_length = (unsigned int) file->private;
 	unsigned long  range_divisor;
 	const char     *range_units;
 	int rate = clk_get_rate(clock->reg_clk);
+	struct mxc_clk    *current_clock = NULL;
+	struct mxc_clk    *parent_clk = NULL;
+
+	/* Examine the clock list. */
+
+	list_for_each_entry(current_clock, &clocks, node) {
+		if (parent == current_clock->reg_clk)
+		    parent_clk = current_clock;
+	}
 
 	if (rate >= 1000000) {
 		range_divisor = 1000000;
@@ -485,12 +509,16 @@ static int mxc_proc_clocks_seq_show(struct seq_file *file, void *data)
 		range_divisor = 1;
 		range_units   = "Hz";
 	}
+
 	result = seq_printf(file,
-		"%s-%-d%*s  %*s  %c%c%c%c%c%c  %3d",
+		"%s-%-d%*s  %s-%-d%*s  %c%c%c%c%c%c  %3d",
 		clock->name,
 		clock->reg_clk->id,
 		longest_length - strlen(clock->name), "",
-		longest_length + 2, "",
+		(parent_clk == NULL) ? "" : parent_clk->name,
+		(parent_clk == NULL) ? 0 : parent_clk->reg_clk->id,
+		(parent_clk == NULL) ? longest_length :
+		longest_length-strlen(parent_clk->name), "",
 		(clock->reg_clk->flags & RATE_PROPAGATES)      ? 'P' : '_',
 		(clock->reg_clk->flags & ALWAYS_ENABLED)       ? 'A' : '_',
 		(clock->reg_clk->flags & RATE_FIXED)           ? 'F' : '_',

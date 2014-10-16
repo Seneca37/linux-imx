@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010 Freescale Semiconductor, Inc. All Rights Reserved.
+ * Copyright (C) 2010-2013 Freescale Semiconductor, Inc. All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,6 +23,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/suspend.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -173,7 +174,8 @@
 		printk(KERN_INFO "data %x\t, %x\n", \
 			__raw_readl(SAIF0_DATA), __raw_readl(SAIF1_DATA));\
 		printk(KERN_INFO "version %x\t, %x\n", \
-			__raw_readl(SAIF0_VERSION), __raw_readl(SAIF1_VERSION));
+			__raw_readl(SAIF0_VERSION),\
+			__raw_readl(SAIF1_VERSION));\
 	} while (0);
 #else
 #define SAIF_DUMP()
@@ -202,6 +204,28 @@ struct mxs_pcm_dma_params mxs_saif_1 = {
 };
 
 /*
+* Should be called when ctrl register is being modified
+* after RUN bit is set.
+*/
+static int mxs_saif_soft_reset_two_ports(void)
+{
+	__raw_writel(BM_SAIF_CTRL_SFTRST, SAIF0_CTRL_SET);
+
+	while (!(__raw_readl(SAIF0_CTRL) & BM_SAIF_CTRL_CLKGATE))
+		mdelay(1);
+
+	__raw_writel(BM_SAIF_CTRL_SFTRST,  SAIF0_CTRL_CLR);
+	__raw_writel(BM_SAIF_CTRL_CLKGATE, SAIF0_CTRL_CLR);
+
+	__raw_writel(BM_SAIF_CTRL_SFTRST, SAIF1_CTRL_SET);
+	while (!(__raw_readl(SAIF1_CTRL) & BM_SAIF_CTRL_CLKGATE))
+		mdelay(1);
+
+	__raw_writel(BM_SAIF_CTRL_SFTRST,  SAIF1_CTRL_CLR);
+	__raw_writel(BM_SAIF_CTRL_CLKGATE, SAIF1_CTRL_CLR);
+}
+
+/*
 * SAIF system clock configuration.
 * Should only be called when port is inactive.
 */
@@ -209,6 +233,7 @@ static int mxs_saif_set_dai_sysclk(struct snd_soc_dai *cpu_dai,
 				  int clk_id, unsigned int freq, int dir)
 {
 	struct clk *saif_clk;
+	struct clk *saif_clk1;
 	u32 scr;
 	struct mxs_saif *saif_select = (struct mxs_saif *)cpu_dai->private_data;
 
@@ -221,6 +246,15 @@ static int mxs_saif_set_dai_sysclk(struct snd_soc_dai *cpu_dai,
 		}
 		clk_set_rate(saif_clk, freq);
 		clk_enable(saif_clk);
+
+		saif_clk1 = saif_select->saif_mclk1;
+		if (IS_ERR(saif_clk1)) {
+			pr_err("%s:failed to get sys_clk\n", __func__);
+			return -EINVAL;
+		}
+		clk_set_rate(saif_clk1, freq);
+		clk_enable(saif_clk1);
+
 		break;
 	default:
 		return -EINVAL;
@@ -235,7 +269,7 @@ static int mxs_saif_set_dai_sysclk(struct snd_soc_dai *cpu_dai,
 static int mxs_saif_set_dai_clkdiv(struct snd_soc_dai *cpu_dai,
 				  int div_id, int div)
 {
-	u32 scr;
+	u32 scr, scr_bk;
 	struct mxs_saif *saif_select = (struct mxs_saif *)cpu_dai->private_data;
 
 	if (saif_select->saif_clk == SAIF0)
@@ -293,10 +327,23 @@ static int mxs_saif_set_dai_clkdiv(struct snd_soc_dai *cpu_dai,
 		return -EINVAL;
 	}
 
-	if (saif_select->saif_clk == SAIF0)
-		__raw_writel(scr, SAIF0_CTRL);
-	else
-		__raw_writel(scr, SAIF1_CTRL);
+	if (saif_select->saif_clk == SAIF0) {
+		scr_bk = __raw_readl(SAIF1_CTRL);
+		mxs_saif_soft_reset_two_ports();
+		__raw_writel(scr & ~BM_SAIF_CTRL_RUN, SAIF0_CTRL);
+		__raw_writel(scr_bk & ~BM_SAIF_CTRL_RUN, SAIF1_CTRL);
+		__raw_writel(BM_SAIF_CTRL_RUN, SAIF0_CTRL_SET);
+		mdelay(1);
+		__raw_writel(BM_SAIF_CTRL_RUN, SAIF1_CTRL_SET);
+	} else {
+		scr_bk = __raw_readl(SAIF0_CTRL);
+		mxs_saif_soft_reset_two_ports();
+		__raw_writel(scr_bk & ~BM_SAIF_CTRL_RUN, SAIF0_CTRL);
+		__raw_writel(scr & ~BM_SAIF_CTRL_RUN, SAIF1_CTRL);
+		__raw_writel(BM_SAIF_CTRL_RUN, SAIF0_CTRL_SET);
+		mdelay(1);
+		__raw_writel(BM_SAIF_CTRL_RUN, SAIF1_CTRL_SET);
+	}
 
 	return 0;
 }
@@ -370,15 +417,23 @@ static int mxs_saif_set_dai_fmt(struct snd_soc_dai *cpu_dai, unsigned int fmt)
 		break;
 	case SND_SOC_DAIFMT_CBM_CFM:
 		if (saif_select->saif_clk == SAIF0) {
-			scr &= ~BM_SAIF_CTRL_SLAVE_MODE;
-			__raw_writel(scr | scr0, SAIF0_CTRL);
-			scr |= BM_SAIF_CTRL_SLAVE_MODE;
-			__raw_writel(scr | scr1, SAIF1_CTRL);
+			mxs_saif_soft_reset_two_ports();
+			__raw_writel((scr & ~BM_SAIF_CTRL_SLAVE_MODE) |\
+				(scr0 & ~BM_SAIF_CTRL_RUN), SAIF0_CTRL);
+			__raw_writel((scr | BM_SAIF_CTRL_SLAVE_MODE) |\
+				(scr1 & ~BM_SAIF_CTRL_RUN), SAIF1_CTRL);
+			__raw_writel(BM_SAIF_CTRL_RUN, SAIF0_CTRL_SET);
+			mdelay(1);
+			__raw_writel(BM_SAIF_CTRL_RUN, SAIF1_CTRL_SET);
 		} else {
-			scr &= ~BM_SAIF_CTRL_SLAVE_MODE;
-			__raw_writel(scr | scr1, SAIF1_CTRL);
-			scr |= BM_SAIF_CTRL_SLAVE_MODE;
-			__raw_writel(scr | scr0, SAIF0_CTRL);
+			mxs_saif_soft_reset_two_ports();
+			__raw_writel((scr | BM_SAIF_CTRL_SLAVE_MODE) |\
+				(scr0 & ~BM_SAIF_CTRL_RUN), SAIF0_CTRL);
+			__raw_writel((scr & ~BM_SAIF_CTRL_SLAVE_MODE) |\
+				(scr1 & ~BM_SAIF_CTRL_RUN), SAIF1_CTRL);
+			__raw_writel(BM_SAIF_CTRL_RUN, SAIF0_CTRL_SET);
+			mdelay(1);
+			__raw_writel(BM_SAIF_CTRL_RUN, SAIF1_CTRL_SET);
 		}
 		break;
 	}
@@ -428,7 +483,7 @@ static int mxs_saif_hw_params(struct snd_pcm_substream *substream,
 			     struct snd_pcm_hw_params *params,
 			     struct snd_soc_dai *cpu_dai)
 {
-	u32 scr, stat;
+	u32 scr, scr_bk, stat;
 	struct mxs_saif *saif_select = (struct mxs_saif *)cpu_dai->private_data;
 	if (((saif_select->stream_mapping == PLAYBACK_SAIF0_CAPTURE_SAIF1) && \
 		(substream->stream == SNDRV_PCM_STREAM_PLAYBACK)) || \
@@ -469,10 +524,23 @@ static int mxs_saif_hw_params(struct snd_pcm_substream *substream,
 	if (((saif_select->stream_mapping == PLAYBACK_SAIF0_CAPTURE_SAIF1) && \
 		(substream->stream == SNDRV_PCM_STREAM_PLAYBACK)) || \
 		((saif_select->stream_mapping == PLAYBACK_SAIF1_CAPTURE_SAIF0) \
-		&& (substream->stream == SNDRV_PCM_STREAM_CAPTURE)))
-		__raw_writel(scr, SAIF0_CTRL);
-	else
-		__raw_writel(scr, SAIF1_CTRL);
+		&& (substream->stream == SNDRV_PCM_STREAM_CAPTURE))) {
+		scr_bk = __raw_readl(SAIF1_CTRL);
+		mxs_saif_soft_reset_two_ports();
+		__raw_writel(scr & ~BM_SAIF_CTRL_RUN, SAIF0_CTRL);
+		__raw_writel(scr_bk & ~BM_SAIF_CTRL_RUN, SAIF1_CTRL);
+		__raw_writel(BM_SAIF_CTRL_RUN, SAIF0_CTRL_SET);
+		mdelay(1);
+		__raw_writel(BM_SAIF_CTRL_RUN, SAIF1_CTRL_SET);
+	} else {
+		scr_bk = __raw_readl(SAIF0_CTRL);
+		mxs_saif_soft_reset_two_ports();
+		__raw_writel(scr_bk & ~BM_SAIF_CTRL_RUN, SAIF0_CTRL);
+		__raw_writel(scr & ~BM_SAIF_CTRL_RUN, SAIF1_CTRL);
+		__raw_writel(BM_SAIF_CTRL_RUN, SAIF0_CTRL_SET);
+		mdelay(1);
+		__raw_writel(BM_SAIF_CTRL_RUN, SAIF1_CTRL_SET);
+	}
 	return 0;
 }
 
@@ -553,11 +621,32 @@ static void mxs_saif_shutdown(struct snd_pcm_substream *substream,
 }
 
 #ifdef CONFIG_PM
+static u32 saif_ctrl_reg[2];
+static unsigned int saif_mclk_freq;
+
+suspend_state_t mxs_pm_get_target(void);
+
+
 static int mxs_saif_suspend(struct snd_soc_dai *dai)
 {
 	if (!dai->active)
 		return 0;
 	/* do we need to disable any clocks? */
+
+#ifdef CONFIG_ARCH_MX28
+  if (mxs_pm_get_target() == PM_SUSPEND_MEM)  {
+
+		struct mxs_saif *saif_select = (struct mxs_saif *)dai->private_data;
+		struct clk *saif_clk = saif_select->saif_mclk;;
+
+		saif_mclk_freq = clk_get_rate(saif_clk);
+		saif_ctrl_reg[0] = __raw_readl(SAIF0_CTRL);
+		saif_ctrl_reg[1] = __raw_readl(SAIF1_CTRL);
+
+  }
+#endif
+
+
 	return 0;
 }
 
@@ -566,6 +655,20 @@ static int mxs_saif_resume(struct snd_soc_dai *dai)
 	if (!dai->active)
 		return 0;
 	/* do we need to enable any clocks? */
+#ifdef CONFIG_ARCH_MX28
+
+  if (mxs_pm_get_target() == PM_SUSPEND_MEM)  {
+
+		struct mxs_saif *saif_select = (struct mxs_saif *)dai->private_data;
+		struct clk *saif_clk = saif_select->saif_mclk;;
+
+		clk_set_rate(saif_clk, saif_mclk_freq);
+		__raw_writel(saif_ctrl_reg[0], SAIF0_CTRL);
+		__raw_writel(saif_ctrl_reg[1], SAIF1_CTRL);
+  }
+#endif
+
+
 	return 0;
 }
 #else
