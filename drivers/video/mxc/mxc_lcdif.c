@@ -56,6 +56,12 @@ static struct fb_videomode lcdif_modedb[] = {
 	FB_SYNC_CLK_LAT_FALL,
 	FB_VMODE_NONINTERLACED,
 	0,},
+	{
+	/* 480x272 @ 60 Hz , pixel clk @ 9MHz */
+	"AMPIRE-AM480272MNTMQW-T00H", 60, 480, 272, 111111, 40, 2, 2, 2, 2, 10,
+	FB_SYNC_CLK_LAT_FALL,
+	FB_VMODE_NONINTERLACED,
+	0,},
 };
 static int lcdif_modedb_sz = ARRAY_SIZE(lcdif_modedb);
 
