@@ -24,6 +24,13 @@
 		interrupt-parent = <&gpio2>;
 		interrupts = <4 IRQ_TYPE_EDGE_FALLING>;
 	};
+
+	/* ST M41T11 realtime clock */
+	/* (using compatible driver for ST M41T00 */
+	m41t11@68 {
+		compatible = "st,m41t00";
+		reg = <0x68>;
+	};
 };
 
 &mxcfb1 {
