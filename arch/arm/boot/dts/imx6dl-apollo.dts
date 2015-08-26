@@ -14,6 +14,13 @@
 / {
 	model = "Aesys i.MX6 DualLite/Solo Apollo (1504)";
 	compatible = "aesys,imx6dl-apollo", "umobo,imx6dl-silverbullet", "fsl,imx6dl";
+
+	ad799x_vref: fixedregulator {
+		compatible = "regulator-fixed";
+		regulator-name = "ad799x_vref";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+	};
 };
 
 &pxp {
@@ -21,6 +28,13 @@
 };
 
 &i2c1 {
+	/* Analog Devices AD7997 ADC */
+	ad799x@24 {
+		compatible = "adi,ad7997";
+		reg = <0x22>;
+		adi,vref = /bits/ 16 <3300>;
+	};
+
 	/* Microchip MCP9801 temperature sensor */
 	mcp9801@48 {
 		compatible = "microchip,mcp980x";
