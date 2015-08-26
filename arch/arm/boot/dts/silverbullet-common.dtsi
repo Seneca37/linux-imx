@@ -432,10 +432,12 @@
 		//interrupts = <1 IRQ_TYPE_EDGE_FALLING>;
 	};
 
+	/*
 	sx8651@48 {
 		compatible = "smt,sx8651";
 		reg = <0x48>;
 	};
+	*/
 
 	mpl3115@60 {
 		compatible = "fsl,mpl3115";

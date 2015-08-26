@@ -21,6 +21,12 @@
 };
 
 &i2c1 {
+	/* Microchip MCP9801 temperature sensor */
+	mcp9801@48 {
+		compatible = "microchip,mcp980x";
+		reg = <0x48>;
+	};
+
 	/* Semtech SX8651 touchscreen */
 	sx8651@49 {
 		compatible = "semtech,sx8651";
