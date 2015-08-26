@@ -1,5 +1,29 @@
 /*
  * iio/adc/ad799x.c
+ * Copyright (C) 2015 Moris Ravasio <moris.ravasio@aesys.com>, Aesys S.p.A.
+ *
+ * Added support for DT and improved the scale calculation
+ *
+ * An example of DT bindings here follows:
+ *
+ * / {
+ * 	ad799x_vref: fixedregulator {
+ * 		compatible = "regulator-fixed";
+ *		regulator-name = "ad799x_vref";
+ * 		regulator-min-microvolt = <3300000>;
+ * 		regulator-max-microvolt = <3300000>;
+ * 	};
+ * };
+ *
+ * &i2c1 {
+ *	ad799x@24 {
+ *		compatible = "adi,ad7997";
+ *		reg = <0x22>;
+ *		adi,vref = /bits/ 16 <3300>;
+ *	};
+ * };
+ *
+ * iio/adc/ad799x.c
  * Copyright (C) 2010-1011 Michael Hennerich, Analog Devices Inc.
  *
  * based on iio/adc/max1363
@@ -163,7 +187,6 @@ static int ad799x_read_raw(struct iio_dev *indio_dev,
 {
 	int ret;
 	struct ad799x_state *st = iio_priv(indio_dev);
-	unsigned int scale_uv;
 
 	switch (m) {
 	case IIO_CHAN_INFO_RAW:
@@ -180,11 +203,15 @@ static int ad799x_read_raw(struct iio_dev *indio_dev,
 			RES_MASK(chan->scan_type.realbits);
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_SCALE:
-		scale_uv = (st->int_vref_mv * 1000) >> chan->scan_type.realbits;
-		*val =  scale_uv / 1000;
-		*val2 = (scale_uv % 1000) * 1000;
-		return IIO_VAL_INT_PLUS_MICRO;
+		ret = (st->int_vref_mv * 1000);
+		if (ret < 0)
+			return ret;
+
+		*val = ret / 1000;
+		*val2 = chan->scan_type.realbits;
+		return IIO_VAL_FRACTIONAL_LOG2;
 	}
+
 	return -EINVAL;
 }
 static const unsigned int ad7998_frequencies[] = {
@@ -585,6 +612,7 @@ static int ad799x_probe(struct i2c_client *client,
 {
 	int ret;
 	struct ad799x_platform_data *pdata = client->dev.platform_data;
+	struct device_node *pnode = client->dev.of_node;
 	struct ad799x_state *st;
 	struct iio_dev *indio_dev = iio_device_alloc(sizeof(*st));
 
@@ -601,12 +629,23 @@ static int ad799x_probe(struct i2c_client *client,
 
 	/* TODO: Add pdata options for filtering and bit delay */
 
-	if (!pdata)
+	if (pnode)
+	{
+		/* Get VREF from DT data */
+		of_property_read_u16(pnode, "adi,vref", &st->int_vref_mv);
+	}
+	else if (pdata)
+	{
+		/* Get VREF from old-style platform data */
+		st->int_vref_mv = pdata->vref_mv;
+	}
+	else
+	{
+		/* Cannot get VREF: return error */
 		return -EINVAL;
+	}
 
-	st->int_vref_mv = pdata->vref_mv;
-
-	st->reg = regulator_get(&client->dev, "vcc");
+	st->reg = regulator_get(&client->dev, "ad799x_vcc");
 	if (!IS_ERR(st->reg)) {
 		ret = regulator_enable(st->reg);
 		if (ret)
