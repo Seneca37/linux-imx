@@ -679,6 +679,12 @@ static void __init imx6q_clocks_init(struct device_node *ccm_node)
 	if (ret)
 		pr_warn("failed to set up CLKO: %d\n", ret);
 
+	/* Set CLKO2 to 12 MHz (required for SGTL5000) */
+	clk_set_rate(clk[cko2_podf], 12000000);
+
+	if(ret)
+		pr_warn("can't set CKO2_PODF rate");
+
 	/* Audio clocks */
 	clk_set_parent(clk[ssi1_sel], clk[pll4_audio_div]);
 	clk_set_parent(clk[ssi2_sel], clk[pll4_audio_div]);

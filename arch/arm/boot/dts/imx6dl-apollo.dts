@@ -9,17 +9,57 @@
 /dts-v1/;
 
 #include "imx6dl.dtsi"
-#include "silverbullet-common.dtsi"
+#include "apollo-common.dtsi"
 
 / {
 	model = "Aesys i.MX6 DualLite/Solo Apollo (1504)";
 	compatible = "aesys,imx6dl-apollo", "umobo,imx6dl-silverbullet", "fsl,imx6dl";
 
-	ad799x_vref: fixedregulator {
-		compatible = "regulator-fixed";
-		regulator-name = "ad799x_vref";
-		regulator-min-microvolt = <3300000>;
-		regulator-max-microvolt = <3300000>;
+	regulators {
+		ad799x_vref: ad799x_3p3v {
+			compatible = "regulator-fixed";
+			regulator-name = "ad799x_vref";
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+		};
+
+		reg_1p8v: 2p5v {
+			compatible = "regulator-fixed";
+			regulator-name = "1P8V";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-always-on;
+		};
+
+		reg_2p5v: 2p5v {
+			compatible = "regulator-fixed";
+			regulator-name = "2P5V";
+			regulator-min-microvolt = <2500000>;
+			regulator-max-microvolt = <2500000>;
+			regulator-always-on;
+		};
+
+		reg_3p3v: 3p3v {
+			compatible = "regulator-fixed";
+			regulator-name = "3P3V";
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+			regulator-always-on;
+		};
+	};
+
+	sound {
+		compatible = "fsl,imx6q-sabrelite-sgtl5000",
+			     "fsl,imx-audio-sgtl5000";
+		model = "imx6q-sabrelite-sgtl5000";
+		ssi-controller = <&ssi1>;
+		audio-codec = <&codec>;
+		audio-routing =
+			"MIC_IN", "Mic Jack",
+			"Mic Jack", "Mic Bias",
+			"Headphone Jack", "HP_OUT";
+		mux-int-port = <1>;
+		mux-ext-port = <3>;
 	};
 };
 
@@ -28,6 +68,16 @@
 };
 
 &i2c1 {
+	/* Freescale SGTL5000 Audio */
+	codec: sgtl5000@0a {
+		compatible = "fsl,sgtl5000";
+		reg = <0x0a>;
+		clocks = <&clks 201>;
+		VDDD-supply = <&reg_1p8v>;
+		VDDA-supply = <&reg_2p5v>;
+		VDDIO-supply = <&reg_3p3v>;
+	};
+
 	/* Analog Devices AD7997 ADC */
 	ad799x@24 {
 		compatible = "adi,ad7997";
@@ -73,4 +123,9 @@
 	int_clk = <0>;
 	late_init = <0>;
 	status = "ok";
+};
+
+&ssi1 {
+	fsl,mode = "i2s-slave";
+	status = "okay";
 };
