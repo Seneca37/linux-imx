@@ -23,7 +23,7 @@
 			regulator-max-microvolt = <3300000>;
 		};
 
-		reg_1p8v: 2p5v {
+		reg_1p8v: 1p8v {
 			compatible = "regulator-fixed";
 			regulator-name = "1P8V";
 			regulator-min-microvolt = <1800000>;
