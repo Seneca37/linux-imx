@@ -79,7 +79,7 @@
 	};
 
 	/* Analog Devices AD7997 ADC */
-	ad799x@24 {
+	ad799x@22 {
 		compatible = "adi,ad7997";
 		reg = <0x22>;
 		adi,vref = /bits/ 16 <3300>;

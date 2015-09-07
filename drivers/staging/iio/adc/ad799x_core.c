@@ -645,7 +645,7 @@ static int ad799x_probe(struct i2c_client *client,
 		return -EINVAL;
 	}
 
-	st->reg = regulator_get(&client->dev, "ad799x_vcc");
+	st->reg = regulator_get(&client->dev, "ad799x_vref");
 	if (!IS_ERR(st->reg)) {
 		ret = regulator_enable(st->reg);
 		if (ret)
