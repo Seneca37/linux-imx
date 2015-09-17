@@ -63,10 +63,6 @@
 	};
 };
 
-&pxp {
-	status = "okay";
-};
-
 &i2c1 {
 	/* Freescale SGTL5000 Audio */
 	codec: sgtl5000@0a {
