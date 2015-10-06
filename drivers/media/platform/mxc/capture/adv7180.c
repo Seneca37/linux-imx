@@ -18,6 +18,7 @@
  *
  * @ingroup Camera
  */
+#define DEBUG
 
 #include <linux/clk.h>
 #include <linux/delay.h>
@@ -379,6 +380,7 @@ static int ioctl_g_ifparm(struct v4l2_int_device *s, struct v4l2_ifparm *p)
 	p->u.bt656.mode = V4L2_IF_TYPE_BT656_MODE_NOBT_8BIT;
 	p->u.bt656.nobt_hs_inv = 1;
 	p->u.bt656.bt_sync_correct = 1;
+	p->u.bt656.clock_curr = 1;	//!!
 
 	/* ADV7180 has a dedicated clock so no clock settings needed. */
 
@@ -885,7 +887,8 @@ static struct v4l2_int_device adv7180_int_device = {
 static void adv7180_hard_reset(bool cvbs)
 {
 	dev_dbg(&adv7180_data.sen.i2c_client->dev,
-		"In adv7180:adv7180_hard_reset\n");
+		"In adv7180:adv7180_hard_reset %d\n", cvbs);
+		
 
 	if (cvbs) {
 		/* Set CVBS input on AIN1 */
@@ -897,6 +900,27 @@ static void adv7180_hard_reset(bool cvbs)
 		 */
 		adv7180_write_reg(ADV7180_INPUT_CTL, 0x09);
 	}
+	
+	//!!
+	adv7180_write_reg(0x14, 0x30);
+	
+	/*
+	adv7180_write_reg(0x04, 0x57);
+	adv7180_write_reg(0x17, 0x41);
+	//!!adv7180_write_reg(0x31, 0x02);
+	adv7180_write_reg(0x31, 0x12);
+	adv7180_write_reg(0x04, 0x45);
+	adv7180_write_reg(0x3D, 0xA2);
+	adv7180_write_reg(0x3E, 0x6A);
+	adv7180_write_reg(0x3F, 0xA0);
+	adv7180_write_reg(0x0E, 0x80);
+	adv7180_write_reg(0x55, 0x81);
+	adv7180_write_reg(0x0E, 0x00);
+	//!!adv7180_write_reg(0x58, 0x04);
+	adv7180_write_reg(0x58, 0x05);
+	adv7180_write_reg(0x52, 0x0D);
+	*/
+		
 
 	/* Datasheet recommends */
 	adv7180_write_reg(0x01, 0xc8);
@@ -943,12 +967,21 @@ static void adv7180_hard_reset(bool cvbs)
 	adv7180_write_reg(0x2E, 0x00);
 	adv7180_write_reg(0x2F, 0xF0);
 	adv7180_write_reg(0x30, 0x00);
+	/* //!!
 	adv7180_write_reg(0x31, 0x12);
 	adv7180_write_reg(0x32, 0x41);
 	adv7180_write_reg(0x33, 0x84);
 	adv7180_write_reg(0x34, 0x00);
 	adv7180_write_reg(0x35, 0x02);
 	adv7180_write_reg(0x36, 0x00);
+	adv7180_write_reg(0x37, 0x01);
+	*/
+	adv7180_write_reg(0x31, 0x1A);
+	adv7180_write_reg(0x32, 0x81);
+	adv7180_write_reg(0x33, 0x84);
+	adv7180_write_reg(0x34, 0x00);
+	adv7180_write_reg(0x35, 0x00);
+	adv7180_write_reg(0x36, 0x7D);
 	adv7180_write_reg(0x37, 0x01);
 	adv7180_write_reg(0x38, 0x80);
 	adv7180_write_reg(0x39, 0xC0);
@@ -981,7 +1014,8 @@ static void adv7180_hard_reset(bool cvbs)
 	adv7180_write_reg(0x55, 0x00);
 	adv7180_write_reg(0x56, 0x10);
 	adv7180_write_reg(0x57, 0x00);
-	adv7180_write_reg(0x58, 0x00);
+	adv7180_write_reg(0x58, 0x01);
+	//!! adv7180_write_reg(0x58, 0x00);
 	adv7180_write_reg(0x59, 0x00);
 	adv7180_write_reg(0x5A, 0x00);
 	adv7180_write_reg(0x5B, 0x00);
@@ -1118,9 +1152,14 @@ static void adv7180_hard_reset(bool cvbs)
 	adv7180_write_reg(0xE5, 0x25);
 	adv7180_write_reg(0xE6, 0x44);
 	adv7180_write_reg(0xE7, 0x63);
+	/* //!!
 	adv7180_write_reg(0xE8, 0x65);
 	adv7180_write_reg(0xE9, 0x14);
 	adv7180_write_reg(0xEA, 0x63);
+	*/
+	adv7180_write_reg(0xE8, 0x41);
+	adv7180_write_reg(0xE9, 0x84);
+	adv7180_write_reg(0xEA, 0x06);
 	adv7180_write_reg(0xEB, 0x55);
 	adv7180_write_reg(0xEC, 0x55);
 	adv7180_write_reg(0xEE, 0x00);
