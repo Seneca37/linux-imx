@@ -841,13 +841,22 @@ static int machine_constraints_voltage(struct regulator_dev *rdev,
 	/* do we need to apply the constraint voltage */
 	if (rdev->constraints->apply_uV &&
 	    rdev->constraints->min_uV == rdev->constraints->max_uV) {
-		ret = _regulator_do_set_voltage(rdev,
-						rdev->constraints->min_uV,
-						rdev->constraints->max_uV);
-		if (ret < 0) {
-			rdev_err(rdev, "failed to apply %duV constraint\n",
-				 rdev->constraints->min_uV);
-			return ret;
+		int current_uV = _regulator_get_voltage(rdev);
+		if (current_uV < 0) {
+			rdev_err(rdev, "failed to get the current voltage\n");
+			return current_uV;
+		}
+		if (current_uV < rdev->constraints->min_uV ||
+		    current_uV > rdev->constraints->max_uV) {
+			ret = _regulator_do_set_voltage(
+				rdev, rdev->constraints->min_uV,
+				rdev->constraints->max_uV);
+			if (ret < 0) {
+				rdev_err(rdev,
+					"failed to apply %duV constraint\n",
+					rdev->constraints->min_uV);
+				return ret;
+			}
 		}
 	}
 
@@ -972,7 +981,7 @@ static int set_machine_constraints(struct regulator_dev *rdev,
 			goto out;
 		}
 	}
-
+	
 	/* If the constraints say the regulator should be on at this point
 	 * and we have control then make sure it is enabled.
 	 */
@@ -984,7 +993,7 @@ static int set_machine_constraints(struct regulator_dev *rdev,
 			goto out;
 		}
 	}
-
+	
 	if (rdev->constraints->ramp_delay && ops->set_ramp_delay) {
 		ret = ops->set_ramp_delay(rdev, rdev->constraints->ramp_delay);
 		if (ret < 0) {
@@ -2122,6 +2131,9 @@ int regulator_list_voltage(struct regulator *regulator, unsigned selector)
 	struct regulator_ops	*ops = rdev->desc->ops;
 	int			ret;
 
+	if (rdev->desc->fixed_uV && rdev->desc->n_voltages == 1 && !selector)
+		return rdev->desc->fixed_uV;
+
 	if (!ops->list_voltage || selector >= rdev->desc->n_voltages)
 		return -EINVAL;
 
@@ -2223,11 +2235,11 @@ EXPORT_SYMBOL_GPL(regulator_get_voltage_sel_regmap);
 int regulator_set_voltage_sel_regmap(struct regulator_dev *rdev, unsigned sel)
 {
 	int ret;
-
 	sel <<= ffs(rdev->desc->vsel_mask) - 1;
 
 	ret = regmap_update_bits(rdev->regmap, rdev->desc->vsel_reg,
 				  rdev->desc->vsel_mask, sel);
+					  
 	if (ret)
 		return ret;
 
@@ -2235,6 +2247,7 @@ int regulator_set_voltage_sel_regmap(struct regulator_dev *rdev, unsigned sel)
 		ret = regmap_update_bits(rdev->regmap, rdev->desc->apply_reg,
 					 rdev->desc->apply_bit,
 					 rdev->desc->apply_bit);
+					 
 	return ret;
 }
 EXPORT_SYMBOL_GPL(regulator_set_voltage_sel_regmap);
@@ -2516,7 +2529,6 @@ int regulator_set_voltage(struct regulator *regulator, int min_uV, int max_uV)
 	ret = _regulator_do_set_voltage(rdev, min_uV, max_uV);
 	if (ret < 0)
 		goto out2;
-	
 out:
 	mutex_unlock(&rdev->mutex);
 	return ret;
@@ -2673,6 +2685,8 @@ static int _regulator_get_voltage(struct regulator_dev *rdev)
 		ret = rdev->desc->ops->get_voltage(rdev);
 	} else if (rdev->desc->ops->list_voltage) {
 		ret = rdev->desc->ops->list_voltage(rdev, 0);
+	} else if (rdev->desc->fixed_uV && (rdev->desc->n_voltages == 1)) {
+		ret = rdev->desc->fixed_uV;
 	} else {
 		return -EINVAL;
 	}
@@ -3395,7 +3409,8 @@ static int add_regulator_attributes(struct regulator_dev *rdev)
 	/* some attributes need specific methods to be displayed */
 	if ((ops->get_voltage && ops->get_voltage(rdev) >= 0) ||
 	    (ops->get_voltage_sel && ops->get_voltage_sel(rdev) >= 0) ||
-	    (ops->list_voltage && ops->list_voltage(rdev, 0) >= 0)) {
+	    (ops->list_voltage && ops->list_voltage(rdev, 0) >= 0) ||
+		(rdev->desc->fixed_uV && (rdev->desc->n_voltages == 1))) {
 		status = device_create_file(dev, &dev_attr_microvolts);
 		if (status < 0)
 			return status;
@@ -3589,7 +3604,7 @@ regulator_register(const struct regulator_desc *regulator_desc,
 	INIT_LIST_HEAD(&rdev->list);
 	BLOCKING_INIT_NOTIFIER_HEAD(&rdev->notifier);
 	INIT_DELAYED_WORK(&rdev->disable_work, regulator_disable_work);
-
+	
 	/* preform any regulator specific init */
 	if (init_data && init_data->regulator_init) {
 		ret = init_data->regulator_init(rdev->reg_data);
@@ -3608,9 +3623,9 @@ regulator_register(const struct regulator_desc *regulator_desc,
 		put_device(&rdev->dev);
 		goto clean;
 	}
-
+	
 	dev_set_drvdata(&rdev->dev, rdev);
-
+	
 	if (config->ena_gpio && gpio_is_valid(config->ena_gpio)) {
 		ret = regulator_ena_gpio_request(rdev, config);
 		if (ret != 0) {
@@ -3625,7 +3640,7 @@ regulator_register(const struct regulator_desc *regulator_desc,
 		if (config->ena_gpio_invert)
 			rdev->ena_gpio_state = !rdev->ena_gpio_state;
 	}
-
+	
 	/* set regulator constraints */
 	if (init_data)
 		constraints = &init_data->constraints;
@@ -3638,7 +3653,7 @@ regulator_register(const struct regulator_desc *regulator_desc,
 	ret = add_regulator_attributes(rdev);
 	if (ret < 0)
 		goto scrub;
-
+		
 	if (init_data && init_data->supply_regulator)
 		supply = init_data->supply_regulator;
 	else if (regulator_desc->supply_name)
