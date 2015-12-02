@@ -88,6 +88,18 @@
  * Below are notes that say "HDMI Initialization Step X"
  * These correspond to the flowchart.
  */
+ 
+ static int hdmi_audio_default_enabled = 0;
+ 
+ static int __init hdmi_audio_default_setup(char *hdmi_audio_default)
+ {
+	 if(hdmi_audio_default != 0 && strcmp(hdmi_audio_default, "1") == 0)
+	 	hdmi_audio_default_enabled = 1;
+		 
+	return 1; 
+ }
+ 
+ __setup("hdmi_audio_enabled_default=", hdmi_audio_default_setup);
 
 /*
  * We are required to configure VGA mode before reading edid
@@ -1821,7 +1833,7 @@ static void mxc_hdmi_edid_rebuild_modelist(struct mxc_hdmi *hdmi)
 static void  mxc_hdmi_default_edid_cfg(struct mxc_hdmi *hdmi)
 {
 	/* Default setting HDMI working in HDMI mode */
-	hdmi->edid_cfg.hdmi_cap = true;
+	hdmi->edid_cfg.hdmi_cap = (hdmi_audio_default_enabled > 0);
 }
 
 static void  mxc_hdmi_default_modelist(struct mxc_hdmi *hdmi)
@@ -1839,7 +1851,7 @@ static void  mxc_hdmi_default_modelist(struct mxc_hdmi *hdmi)
 
 	fb_destroy_modelist(&hdmi->fbi->modelist);
 
-	/*Add all no interlaced CEA mode to default modelist */
+	/* Add all no interlaced CEA mode to default modelist */
 	for (i = 0; i < ARRAY_SIZE(mxc_cea_mode); i++) {
 		mode = &mxc_cea_mode[i];
 		if (!(mode->vmode & FB_VMODE_INTERLACED) && (mode->xres != 0))
@@ -2572,7 +2584,7 @@ static int mxc_hdmi_disp_init(struct mxc_dispdrv_handle *disp,
 	hdmi->fbi->mode = (struct fb_videomode *)mode;
 
 	/* Default setting HDMI working in HDMI mode*/
-	hdmi->edid_cfg.hdmi_cap = true;
+	hdmi->edid_cfg.hdmi_cap = (hdmi_audio_default_enabled > 0);
 
 	INIT_DELAYED_WORK(&hdmi->hotplug_work, hotplug_worker);
 	INIT_DELAYED_WORK(&hdmi->hdcp_hdp_work, hdcp_hdp_worker);
