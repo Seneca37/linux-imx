@@ -8,12 +8,12 @@
 
 /dts-v1/;
 
-#include "imx6dl.dtsi"
+#include "imx6q.dtsi"
 #include "apollo-common.dtsi"
 
 / {
-	model = "Aesys i.MX6 DualLite/Solo Apollo (1504)";
-	compatible = "aesys,imx6dl-apollo", "umobo,imx6dl-silverbullet", "fsl,imx6dl";
+	model = "Aesys 1504A (i.MX6 Quad/Dual)";
+	compatible = "aesys,imx6q-apollo", "umobo,imx6q-silverbullet", "fsl,imx6q";
 
 	regulators {
 		ad799x_vref: ad799x_3p3v {
@@ -61,10 +61,6 @@
 		mux-int-port = <1>;
 		mux-ext-port = <3>;
 	};
-};
-
-&pxp {
-	status = "okay";
 };
 
 &i2c1 {
@@ -127,5 +123,15 @@
 
 &ssi1 {
 	fsl,mode = "i2s-slave";
+	status = "okay";
+};
+
+&usdhc1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_usdhc1>;
+	non-removable;
+	no-1-8-v;
+	keep-power-in-suspend;
+	enable-sdio-wakeup;
 	status = "okay";
 };

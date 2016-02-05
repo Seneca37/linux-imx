@@ -12,7 +12,7 @@
 #include "apollo-common.dtsi"
 
 / {
-	model = "Aesys i.MX6 Quad/Dual Apollo (1504)";
+	model = "Aesys 1504B (i.MX6 Quad/Dual)";
 	compatible = "aesys,imx6q-apollo", "umobo,imx6q-silverbullet", "fsl,imx6q";
 
 	regulators {
@@ -101,11 +101,11 @@
 		reg = <0x50>;
 	};
 
-	/* ST M41T11 realtime clock */
-	/* (using compatible driver for ST M41T00 */
-	m41t11@68 {
-		compatible = "st,m41t00";
-		reg = <0x68>;
+	/* MCP7940N realtime clock */
+	/* (using compatible driver for DS1307 */
+	mcp7940n@6f {
+		compatible = "ds1307";
+		reg = <0x6f>;
 	};
 };
 
