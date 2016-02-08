@@ -788,12 +788,8 @@
 &usdhc1 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_usdhc1>;
-	cd-gpios = <&gpio6 14 0>;
-	wp-gpios = <&gpio6 15 0>;
-	vmmc-supply = <&reg_3v3_sd>;
 	no-1-8-v;
 	keep-power-in-suspend;
-	enable-sdio-wakeup;
 	status = "okay";
 };
 

@@ -125,3 +125,7 @@
 	fsl,mode = "i2s-slave";
 	status = "okay";
 };
+
+&usdhc1 {
+	non-removable;
+};

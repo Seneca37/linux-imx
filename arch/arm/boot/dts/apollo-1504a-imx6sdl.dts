@@ -12,7 +12,7 @@
 #include "apollo-common.dtsi"
 
 / {
-	model = "Aesys 1504B (i.MX6 DualLite/Solo)";
+	model = "Aesys 1504A (i.MX6 DualLite/Solo)";
 	compatible = "aesys,imx6dl-apollo", "umobo,imx6dl-silverbullet", "fsl,imx6dl";
 
 	regulators {
@@ -105,11 +105,11 @@
 		reg = <0x50>;
 	};
 
-		/* MCP7940N realtime clock */
-	/* (using compatible driver for DS1307 */
-	mcp7940n@6f {
-		compatible = "ds1307";
-		reg = <0x6f>;
+	/* ST M41T11 realtime clock */
+	/* (using compatible driver for ST M41T00 */
+	m41t11@68 {
+		compatible = "st,m41t00";
+		reg = <0x68>;
 	};
 };
 
@@ -128,4 +128,10 @@
 &ssi1 {
 	fsl,mode = "i2s-slave";
 	status = "okay";
+};
+
+&usdhc1 {
+	non-removable;
+	keep-power-in-suspend;
+	enable-sdio-wakeup;
 };

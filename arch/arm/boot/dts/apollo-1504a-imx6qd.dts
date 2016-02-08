@@ -127,11 +127,7 @@
 };
 
 &usdhc1 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&pinctrl_usdhc1>;
 	non-removable;
-	no-1-8-v;
 	keep-power-in-suspend;
 	enable-sdio-wakeup;
-	status = "okay";
 };
