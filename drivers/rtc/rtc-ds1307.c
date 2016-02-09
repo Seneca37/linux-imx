@@ -92,6 +92,15 @@ enum ds_type {
 #	define DS1337_BIT_A2I		0x02
 #	define DS1337_BIT_A1I		0x01
 #define DS1339_REG_ALARM1_SECS	0x07
+#define MCP7941X_REG_CONTROL    0x07
+#	define MCP7941X_BIT_OUT		0x80
+#	define MCP7941X_BIT_SQWEN	0x40
+#	define MCP7941X_BIT_ALM1EN	0x20
+#	define MCP7941X_BIT_ALM0EN	0x10
+#	define MCP7941X_BIT_EXTOSC	0x08
+#	define MCP7941X_BIT_CRSTRIM	0x04
+#	define MCP7941X_BIT_SQWFS1	0x02
+#	define MCP7941X_BIT_SQWFS0	0x01
 
 #define DS13XX_TRICKLE_CHARGER_MAGIC	0xa0
 
@@ -892,6 +901,12 @@ read_rtc:
 			dev_warn(&client->dev, "SET TIME!\n");
 			goto read_rtc;
 		}
+
+#ifdef MCP7941X_DEBUG_OSCILLATOR        
+        /* Enable 32.768 kHz output */
+        i2c_smbus_write_byte_data(client, MCP7941X_REG_CONTROL,
+            MCP7941X_BIT_SQWFS0 | MCP7941X_BIT_SQWFS1 | MCP7941X_BIT_SQWEN);
+#endif
 
 		break;
 	default:
