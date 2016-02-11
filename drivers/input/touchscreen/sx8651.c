@@ -1,12 +1,12 @@
 /*
  * Driver for Semtech SX8651 I2C touchscreen controller.
  *
- * Copyright (c) 2015 Aesys S.p.A.
+ * Copyright (c) 2015-2016 Aesys S.p.A.
  *      Moris Ravasio <moris.ravasio@aesys.com>
  *
  * Using code from:
  *  - sx8654.c
- *      Sébastien Szymanski <sebastien.szymanski@armadeus.com>
+ *      Sï¿½bastien Szymanski <sebastien.szymanski@armadeus.com>
  *  - sx865x.c
  *	Copyright (c) 2013 U-MoBo Srl
  *	Pierluigi Passaro <p.passaro@u-mobo.com>
@@ -148,53 +148,13 @@ static irqreturn_t sx8651_irq(int irq, void *handle)
 
 static int sx8651_open(struct input_dev *dev)
 {
-	struct sx8651 *sx8651 = input_get_drvdata(dev);
-	struct i2c_client *client = sx8651->client;
-	int error;
-
-	/* enable pen trigger mode */
-	error = i2c_smbus_write_byte_data(client, I2C_REG_TOUCH0,
-					  RATE_5000CPS | POWDLY_1_1MS);
-	if (error) {
-		dev_err(&client->dev, "writing to I2C_REG_TOUCH0 failed");
-		return error;
-	}
-
-	error = i2c_smbus_write_byte(client, CMD_PENTRG);
-	if (error) {
-		dev_err(&client->dev, "writing command CMD_PENTRG failed");
-		return error;
-	}
-
-	/* perform initial read (just to be sure that IRQ request is reset by the controller) */
-	sx8651_readloop(sx8651);
-
-	/* enable IRQ */
-	enable_irq(client->irq);
-
+    /* Simply does nothing, since the chip has already been configured and enabled in probe */
 	return 0;
 }
 
 static void sx8651_close(struct input_dev *dev)
 {
-	struct sx8651 *sx8651 = input_get_drvdata(dev);
-	struct i2c_client *client = sx8651->client;
-	int error;
-
-	disable_irq(client->irq);
-
-	/* enable manual mode mode */
-	error = i2c_smbus_write_byte(client, CMD_MANUAL);
-	if (error) {
-		dev_err(&client->dev, "writing command CMD_MANUAL failed");
-		return;
-	}
-
-	error = i2c_smbus_write_byte_data(client, I2C_REG_TOUCH0, 0);
-	if (error) {
-		dev_err(&client->dev, "writing to I2C_REG_TOUCH0 failed");
-		return;
-	}
+    /* Simply does nothing: the chip is left configured and enabled */
 }
 
 static int sx8651_probe(struct i2c_client *client,
@@ -264,10 +224,27 @@ static int sx8651_probe(struct i2c_client *client,
 		return error;
 	}
 
+	/* set data rate */
+	error = i2c_smbus_write_byte_data(client, I2C_REG_TOUCH0,
+					  RATE_5000CPS | POWDLY_1_1MS);
+	if (error) {
+		dev_err(&client->dev, "writing to I2C_REG_TOUCH0 failed");
+		return error;
+	}
+
+    /* enable pen trigger mode */
+	error = i2c_smbus_write_byte(client, CMD_PENTRG);
+	if (error) {
+		dev_err(&client->dev, "writing command CMD_PENTRG failed");
+		return error;
+	}
+    
+    /* request and enable irq */
 	error = devm_request_threaded_irq(&client->dev, client->irq,
 					  NULL, sx8651_irq,
 					  IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
 					  client->name, sx8651);
+                      
 	if (error) {
 		dev_err(&client->dev,
 			"Failed to enable IRQ %d, error: %d\n",
@@ -275,9 +252,7 @@ static int sx8651_probe(struct i2c_client *client,
 		return error;
 	}
 
-	/* Disable the IRQ, we'll enable it in sx8651_open() */
-	disable_irq(client->irq);
-
+    /* register input device */
 	error = input_register_device(sx8651->input);
 	if (error)
 		return error;
