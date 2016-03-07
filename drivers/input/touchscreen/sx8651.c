@@ -251,6 +251,9 @@ static int sx8651_probe(struct i2c_client *client,
 			client->irq, error);
 		return error;
 	}
+    
+    /* perform read */
+	sx8651_readloop(sx8651);
 
     /* register input device */
 	error = input_register_device(sx8651->input);
