@@ -164,6 +164,8 @@ static int sx8651_probe(struct i2c_client *client,
 	struct input_dev *input;
 	int error;
 
+    dev_dbg(&client->dev, "probing...");
+
 	if (!i2c_check_functionality(client->adapter,
 				     I2C_FUNC_SMBUS_READ_WORD_DATA))
 		return -ENXIO;
@@ -225,8 +227,12 @@ static int sx8651_probe(struct i2c_client *client,
 	}
 
 	/* set data rate */
+    /*
 	error = i2c_smbus_write_byte_data(client, I2C_REG_TOUCH0,
 					  RATE_5000CPS | POWDLY_1_1MS);
+                      */
+    error = i2c_smbus_write_byte_data(client, I2C_REG_TOUCH0,
+	                  POWDLY_1_1MS);
 	if (error) {
 		dev_err(&client->dev, "writing to I2C_REG_TOUCH0 failed");
 		return error;
