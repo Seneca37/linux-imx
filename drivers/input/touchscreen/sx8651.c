@@ -157,47 +157,11 @@ static void sx8651_close(struct input_dev *dev)
     /* Simply does nothing: the chip is left configured and enabled */
 }
 
-static int sx8651_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int sx8651_init(struct i2c_client *client)
 {
-	struct sx8651 *sx8651;
-	struct input_dev *input;
-	int error;
-
-    dev_dbg(&client->dev, "probing...");
-
-	if (!i2c_check_functionality(client->adapter,
-				     I2C_FUNC_SMBUS_READ_WORD_DATA))
-		return -ENXIO;
-
-	sx8651 = devm_kzalloc(&client->dev, sizeof(*sx8651), GFP_KERNEL);
-	if (!sx8651)
-		return -ENOMEM;
-
-	input = devm_input_allocate_device(&client->dev);
-	if (!input)
-		return -ENOMEM;
-
-	input->name = "SX8651 I2C Touchscreen";
-	input->id.bustype = BUS_I2C;
-	input->dev.parent = &client->dev;
-	input->open = sx8651_open;
-	input->close = sx8651_close;
-
-	__set_bit(INPUT_PROP_DIRECT, input->propbit);
-
-	input->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
-	input->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
-	
-	input_set_abs_params(input, ABS_X, 0, MAX_12BIT, 0, 0);
-	input_set_abs_params(input, ABS_Y, 0, MAX_12BIT, 0, 0);
-
-	sx8651->client = client;
-	sx8651->input = input;
-
-	input_set_drvdata(sx8651->input, sx8651);
-
-	error = i2c_smbus_write_byte_data(client, I2C_REG_SOFTRESET,
+    int error;
+    
+    error = i2c_smbus_write_byte_data(client, I2C_REG_SOFTRESET,
 					  SOFTRESET_VALUE);
 	if (error) {
 		dev_err(&client->dev, "writing softreset value failed");
@@ -227,10 +191,6 @@ static int sx8651_probe(struct i2c_client *client,
 	}
 
 	/* set data rate */
-    /*
-	error = i2c_smbus_write_byte_data(client, I2C_REG_TOUCH0,
-					  RATE_5000CPS | POWDLY_1_1MS);
-                      */
     error = i2c_smbus_write_byte_data(client, I2C_REG_TOUCH0,
 	                  POWDLY_1_1MS);
 	if (error) {
@@ -244,6 +204,85 @@ static int sx8651_probe(struct i2c_client *client,
 		dev_err(&client->dev, "writing command CMD_PENTRG failed");
 		return error;
 	}
+    
+    return error;
+}
+
+static ssize_t sx8651_reinit(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf, size_t count)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+    struct sx8651 *priv = i2c_get_clientdata(client);
+
+    /* Perform initialization again */
+    sx8651_init(priv->client);
+    
+    /* perform read */
+	sx8651_readloop(priv);
+    
+    return count;
+}
+
+static DEVICE_ATTR(reinit, S_IWUSR | S_IWGRP | S_IWOTH, NULL, sx8651_reinit);
+
+static struct attribute *sx8651_attributes[] = {
+	&dev_attr_reinit.attr,
+	NULL,
+};
+
+static const struct attribute_group sx8651_attr_group = {
+	.attrs = sx8651_attributes,
+};
+
+static const struct attribute_group *sx8651_attr_groups[] = {
+    &sx8651_attr_group,
+    NULL,
+};
+
+static int sx8651_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
+{
+	struct sx8651 *sx8651;
+	struct input_dev *input;
+	int error;
+
+    dev_dbg(&client->dev, "probing...");
+
+	if (!i2c_check_functionality(client->adapter,
+				     I2C_FUNC_SMBUS_READ_WORD_DATA))
+		return -ENXIO;
+
+	sx8651 = devm_kzalloc(&client->dev, sizeof(*sx8651), GFP_KERNEL);
+	if (!sx8651)
+		return -ENOMEM;
+
+	input = devm_input_allocate_device(&client->dev);
+	if (!input)
+		return -ENOMEM;
+
+	input->name = "SX8651 I2C Touchscreen";
+	input->id.bustype = BUS_I2C;
+	input->dev.parent = &client->dev;
+    input->dev.groups = sx8651_attr_groups;
+	input->open = sx8651_open;
+	input->close = sx8651_close;
+
+	__set_bit(INPUT_PROP_DIRECT, input->propbit);
+
+	input->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
+	input->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
+	
+	input_set_abs_params(input, ABS_X, 0, MAX_12BIT, 0, 0);
+	input_set_abs_params(input, ABS_Y, 0, MAX_12BIT, 0, 0);
+
+	sx8651->client = client;
+	sx8651->input = input;
+
+	input_set_drvdata(sx8651->input, sx8651);
+
+    /* Perform initialization */
+	sx8651_init(client);
     
     /* request and enable irq */
 	error = devm_request_threaded_irq(&client->dev, client->irq,
@@ -260,7 +299,7 @@ static int sx8651_probe(struct i2c_client *client,
     
     /* perform read */
 	sx8651_readloop(sx8651);
-
+    
     /* register input device */
 	error = input_register_device(sx8651->input);
 	if (error)
