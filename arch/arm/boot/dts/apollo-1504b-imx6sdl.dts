@@ -107,7 +107,7 @@
 
 	/* MCP7940N realtime clock */
 	/* (using compatible driver for MCP7941X (DS1307) */
-	mcp7940n@6f {
+	/*mcp7940n@6f {
 		compatible = "mcp7941x";
 		reg = <0x6f>;
 	};
@@ -122,6 +122,11 @@
 	default_bpp = <16>;
 	int_clk = <0>;
 	late_init = <0>;
+	status = "ok";
+};
+
+&mxcfb2 {
+	disp_dev = "hdmi";
 	status = "ok";
 };
 
