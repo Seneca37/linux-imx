@@ -110,7 +110,7 @@
 	/*mcp7940n@6f {
 		compatible = "mcp7941x";
 		reg = <0x6f>;
-	};
+	};*/
 };
 
 &mxcfb1 {
