@@ -107,10 +107,10 @@
 
 	/* MCP7940N realtime clock */
 	/* (using compatible driver for MCP7941X (DS1307) */
-	/*mcp7940n@6f {
+	mcp7940n@6f {
 		compatible = "mcp7941x";
 		reg = <0x6f>;
-	};*/
+	};
 };
 
 &mxcfb1 {
