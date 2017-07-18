@@ -30,6 +30,9 @@
 #include <linux/of_gpio.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/regulator/consumer.h>
+#include <linux/mfd/syscon.h>
+#include <linux/mfd/syscon/imx6q-iomuxc-gpr.h>
+#include <linux/regmap.h>
 #include <media/v4l2-chip-ident.h>
 #include <media/v4l2-int-device.h>
 #include "mxc_v4l2_capture.h"
@@ -95,6 +98,7 @@ typedef struct {
 	u16 raw_height;		/*!< Raw height. */
 	u16 active_width;	/*!< Active width. */
 	u16 active_height;	/*!< Active height. */
+	int frame_rate;		/*!< Frame rate. */
 } video_fmt_t;
 
 /*! Description of video formats supported.
@@ -110,6 +114,7 @@ static video_fmt_t video_fmts[] = {
 	 .raw_height = 525,	/* SENS_FRM_HEIGHT */
 	 .active_width = 720,	/* ACT_FRM_WIDTH plus 1 */
 	 .active_height = 480,	/* ACT_FRM_WIDTH plus 1 */
+	 .frame_rate = 30,
 	 },
 	{			/*! (B, G, H, I, N) PAL */
 	 .v4l2_id = V4L2_STD_PAL,
@@ -118,6 +123,7 @@ static video_fmt_t video_fmts[] = {
 	 .raw_height = 625,
 	 .active_width = 720,
 	 .active_height = 576,
+	 .frame_rate = 25,
 	 },
 	{			/*! Unlocked standard */
 	 .v4l2_id = V4L2_STD_ALL,
@@ -126,6 +132,7 @@ static video_fmt_t video_fmts[] = {
 	 .raw_height = 625,
 	 .active_width = 720,
 	 .active_height = 576,
+	 .frame_rate = 0,
 	 },
 };
 
@@ -178,6 +185,8 @@ static struct v4l2_queryctrl adv7180_qctrl[] = {
 
 static inline void adv7180_power_down(int enable)
 {
+	if (!gpio_is_valid(pwn_gpio))
+		return;
 	gpio_set_value_cansleep(pwn_gpio, !enable);
 	msleep(2);
 }
@@ -312,29 +321,30 @@ static int adv7180_write_reg(u8 reg, u8 val)
  */
 static void adv7180_get_std(v4l2_std_id *std)
 {
-	int tmp;
-	int idx;
+	int status_1, standard, idx;
+	bool locked;
 
 	dev_dbg(&adv7180_data.sen.i2c_client->dev, "In adv7180_get_std\n");
 
-	/* Read the AD_RESULT to get the detect output video standard */
-	tmp = adv7180_read(ADV7180_STATUS_1) & 0x70;
+	status_1 = adv7180_read(ADV7180_STATUS_1);
+	locked = status_1 & 0x1;
+	standard = status_1 & 0x70;
 
 	mutex_lock(&mutex);
-	if (tmp == 0x40) {
-		/* PAL */
-		*std = V4L2_STD_PAL;
-		idx = ADV7180_PAL;
-	} else if (tmp == 0) {
-		/*NTSC*/
-		*std = V4L2_STD_NTSC;
-		idx = ADV7180_NTSC;
-	} else {
-		*std = V4L2_STD_ALL;
-		idx = ADV7180_NOT_LOCKED;
-		dev_dbg(&adv7180_data.sen.i2c_client->dev,
-			"Got invalid video standard!\n");
-	}
+	*std = V4L2_STD_ALL;
+	idx = ADV7180_NOT_LOCKED;
+	if (locked) {
+		if (standard == 0x40) {
+			*std = V4L2_STD_PAL;
+			idx = ADV7180_PAL;
+			dev_err(&adv7180_data.sen.i2c_client->dev, "Locked as PAL\n");
+		} else if (standard == 0) {
+			*std = V4L2_STD_NTSC;
+			idx = ADV7180_NTSC;
+			dev_err(&adv7180_data.sen.i2c_client->dev, "Locked as NTSC\n");
+		}
+	} else
+		dev_err(&adv7180_data.sen.i2c_client->dev, "NOT Locked !!\n");
 	mutex_unlock(&mutex);
 
 	/* This assumes autodetect which this device uses. */
@@ -377,10 +387,8 @@ static int ioctl_g_ifparm(struct v4l2_int_device *s, struct v4l2_ifparm *p)
 	/* Initialize structure to 0s then set any non-0 values. */
 	memset(p, 0, sizeof(*p));
 	p->if_type = V4L2_IF_TYPE_BT656; /* This is the only possibility. */
-	p->u.bt656.mode = V4L2_IF_TYPE_BT656_MODE_NOBT_8BIT;
-	p->u.bt656.nobt_hs_inv = 1;
-	p->u.bt656.bt_sync_correct = 1;
-	p->u.bt656.clock_curr = 1;	//!!
+	p->u.bt656.mode = V4L2_IF_TYPE_BT656_MODE_BT_8BIT;
+	p->u.bt656.clock_curr = 0;
 
 	/* ADV7180 has a dedicated clock so no clock settings needed. */
 
@@ -767,6 +775,37 @@ static int ioctl_enum_framesizes(struct v4l2_int_device *s,
 }
 
 /*!
+ * ioctl_enum_frameintervals - V4L2 sensor interface handler for
+ *			       VIDIOC_ENUM_FRAMEINTERVALS ioctl
+ * @s: pointer to standard V4L2 device structure
+ * @fival: standard V4L2 VIDIOC_ENUM_FRAMEINTERVALS ioctl structure
+ *
+ * Return 0 if successful, otherwise -EINVAL.
+ */
+static int ioctl_enum_frameintervals(struct v4l2_int_device *s,
+					 struct v4l2_frmivalenum *fival)
+{
+	video_fmt_t fmt;
+	int i;
+
+	if (fival->index != 0)
+		return -EINVAL;
+
+	for (i = 0; i < ARRAY_SIZE(video_fmts) - 1; i++) {
+		fmt = video_fmts[i];
+		if (fival->width  == fmt.active_width &&
+		    fival->height == fmt.active_height) {
+			fival->type = V4L2_FRMIVAL_TYPE_DISCRETE;
+			fival->discrete.numerator = 1;
+			fival->discrete.denominator = fmt.frame_rate;
+			return 0;
+		}
+	}
+
+	return -EINVAL;
+}
+
+/*!
  * ioctl_g_chip_ident - V4L2 sensor interface handler for
  *			VIDIOC_DBG_G_CHIP_IDENT ioctl
  * @s: pointer to standard V4L2 device structure
@@ -856,7 +895,10 @@ static struct v4l2_int_ioctl_desc adv7180_ioctl_desc[] = {
 	{vidioc_int_g_ctrl_num, (v4l2_int_ioctl_func*)ioctl_g_ctrl},
 	{vidioc_int_s_ctrl_num, (v4l2_int_ioctl_func*)ioctl_s_ctrl},
 	{vidioc_int_enum_framesizes_num,
-				(v4l2_int_ioctl_func *) ioctl_enum_framesizes},
+				(v4l2_int_ioctl_func *)ioctl_enum_framesizes},
+	{vidioc_int_enum_frameintervals_num,
+				(v4l2_int_ioctl_func *)
+				ioctl_enum_frameintervals},
 	{vidioc_int_g_chip_ident_num,
 				(v4l2_int_ioctl_func *)ioctl_g_chip_ident},
 };
@@ -887,8 +929,7 @@ static struct v4l2_int_device adv7180_int_device = {
 static void adv7180_hard_reset(bool cvbs)
 {
 	dev_dbg(&adv7180_data.sen.i2c_client->dev,
-		"In adv7180:adv7180_hard_reset %d\n", cvbs);
-		
+		"In adv7180:adv7180_hard_reset\n");
 
 	if (cvbs) {
 		/* Set CVBS input on AIN1 */
@@ -900,27 +941,6 @@ static void adv7180_hard_reset(bool cvbs)
 		 */
 		adv7180_write_reg(ADV7180_INPUT_CTL, 0x09);
 	}
-	
-	//!!
-	adv7180_write_reg(0x14, 0x30);
-	
-	/*
-	adv7180_write_reg(0x04, 0x57);
-	adv7180_write_reg(0x17, 0x41);
-	//!!adv7180_write_reg(0x31, 0x02);
-	adv7180_write_reg(0x31, 0x12);
-	adv7180_write_reg(0x04, 0x45);
-	adv7180_write_reg(0x3D, 0xA2);
-	adv7180_write_reg(0x3E, 0x6A);
-	adv7180_write_reg(0x3F, 0xA0);
-	adv7180_write_reg(0x0E, 0x80);
-	adv7180_write_reg(0x55, 0x81);
-	adv7180_write_reg(0x0E, 0x00);
-	//!!adv7180_write_reg(0x58, 0x04);
-	adv7180_write_reg(0x58, 0x05);
-	adv7180_write_reg(0x52, 0x0D);
-	*/
-		
 
 	/* Datasheet recommends */
 	adv7180_write_reg(0x01, 0xc8);
@@ -967,21 +987,12 @@ static void adv7180_hard_reset(bool cvbs)
 	adv7180_write_reg(0x2E, 0x00);
 	adv7180_write_reg(0x2F, 0xF0);
 	adv7180_write_reg(0x30, 0x00);
-	/* //!!
 	adv7180_write_reg(0x31, 0x12);
 	adv7180_write_reg(0x32, 0x41);
 	adv7180_write_reg(0x33, 0x84);
 	adv7180_write_reg(0x34, 0x00);
 	adv7180_write_reg(0x35, 0x02);
 	adv7180_write_reg(0x36, 0x00);
-	adv7180_write_reg(0x37, 0x01);
-	*/
-	adv7180_write_reg(0x31, 0x1A);
-	adv7180_write_reg(0x32, 0x81);
-	adv7180_write_reg(0x33, 0x84);
-	adv7180_write_reg(0x34, 0x00);
-	adv7180_write_reg(0x35, 0x00);
-	adv7180_write_reg(0x36, 0x7D);
 	adv7180_write_reg(0x37, 0x01);
 	adv7180_write_reg(0x38, 0x80);
 	adv7180_write_reg(0x39, 0xC0);
@@ -1014,8 +1025,7 @@ static void adv7180_hard_reset(bool cvbs)
 	adv7180_write_reg(0x55, 0x00);
 	adv7180_write_reg(0x56, 0x10);
 	adv7180_write_reg(0x57, 0x00);
-	adv7180_write_reg(0x58, 0x01);
-	//!! adv7180_write_reg(0x58, 0x00);
+	adv7180_write_reg(0x58, 0x00);
 	adv7180_write_reg(0x59, 0x00);
 	adv7180_write_reg(0x5A, 0x00);
 	adv7180_write_reg(0x5B, 0x00);
@@ -1152,14 +1162,9 @@ static void adv7180_hard_reset(bool cvbs)
 	adv7180_write_reg(0xE5, 0x25);
 	adv7180_write_reg(0xE6, 0x44);
 	adv7180_write_reg(0xE7, 0x63);
-	/* //!!
 	adv7180_write_reg(0xE8, 0x65);
 	adv7180_write_reg(0xE9, 0x14);
 	adv7180_write_reg(0xEA, 0x63);
-	*/
-	adv7180_write_reg(0xE8, 0x41);
-	adv7180_write_reg(0xE9, 0x84);
-	adv7180_write_reg(0xEA, 0x06);
 	adv7180_write_reg(0xEB, 0x55);
 	adv7180_write_reg(0xEC, 0x55);
 	adv7180_write_reg(0xEE, 0x00);
@@ -1198,10 +1203,11 @@ static int adv7180_probe(struct i2c_client *client,
 			 const struct i2c_device_id *id)
 {
 	int rev_id;
-	int ret = 0;
+	int ret = 0, rst_gpio;
 	u32 cvbs = true;
 	struct pinctrl *pinctrl;
 	struct device *dev = &client->dev;
+	struct regmap *gpr;
 
 	printk(KERN_ERR"DBG sensor data is at %p\n", &adv7180_data);
 
@@ -1212,17 +1218,29 @@ static int adv7180_probe(struct i2c_client *client,
 		return PTR_ERR(pinctrl);
 	}
 
-	/* request power down pin */
+	/* request power down pin, if available */
 	pwn_gpio = of_get_named_gpio(dev->of_node, "pwn-gpios", 0);
-	if (!gpio_is_valid(pwn_gpio)) {
-		dev_err(dev, "no sensor pwdn pin available\n");
-		return -ENODEV;
+	if (!gpio_is_valid(pwn_gpio))
+		dev_info(dev, "no sensor pwdn pin available\n");
+	else {
+		ret = devm_gpio_request_one(dev, pwn_gpio, GPIOF_OUT_INIT_HIGH,
+					    "adv7180_pwdn");
+		if (ret < 0) {
+			dev_info(dev, "no power pin available\n");
+			return ret;
+		}
 	}
-	ret = devm_gpio_request_one(dev, pwn_gpio, GPIOF_OUT_INIT_HIGH,
-					"adv7180_pwdn");
-	if (ret < 0) {
-		dev_err(dev, "no power pin available!\n");
-		return ret;
+
+	/* request reset pin */
+	rst_gpio = of_get_named_gpio(dev->of_node, "rst-gpios", 0);
+	if (!gpio_is_valid(rst_gpio))
+		dev_err(dev, "no sensor reset pin available\n");
+	else {
+		ret = devm_gpio_request_one(dev, rst_gpio,
+					    GPIOF_OUT_INIT_HIGH,
+					    "adv7180_reset");
+		if (ret < 0)
+			return ret;
 	}
 
 	adv7180_regulator_enable(dev);
@@ -1288,6 +1306,27 @@ static int adv7180_probe(struct i2c_client *client,
 	if (ret) {
 		dev_err(dev, "cvbs setting is not found\n");
 		cvbs = true;
+	}
+
+	gpr = syscon_regmap_lookup_by_compatible("fsl,imx6q-iomuxc-gpr");
+	if (IS_ERR(gpr)) {
+		dev_err(dev, "%s: failed to find fsl,imx6q-iomux-gpr regmap\n",
+			__func__);
+		return -ENODEV;
+	}
+	if (of_machine_is_compatible("fsl,imx6q")) {
+		int mask = adv7180_data.sen.csi ? (1 << 20) : (1 << 19);
+
+		regmap_update_bits(gpr, IOMUXC_GPR1, mask, mask);
+		adv7180_regulator_enable(dev);
+	} else if (of_machine_is_compatible("fsl,imx6dl")) {
+		int mask = adv7180_data.sen.csi ? (7 << 3) : (7 << 0);
+		int val = adv7180_data.sen.csi ? (4 << 3) : (4 << 0);
+
+		regmap_update_bits(gpr, IOMUXC_GPR13, mask, val);
+	} else {
+		dev_err(dev, "%s: unsupported machine, aborting\n", __func__);
+		return -EINVAL;
 	}
 
 	/*! ADV7180 initialization. */
