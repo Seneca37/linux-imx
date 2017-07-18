@@ -278,7 +278,7 @@
 	};
 	*/
 
-	/*
+
 	adv7180: adv7180@21 {
 		compatible = "adv,adv7180";
 		reg = <0x21>;
@@ -308,7 +308,7 @@
 			};
 		};
 	};
-	*/
+
 };
 
 &i2c2 {
@@ -728,12 +728,12 @@
 	#address-cells = <1>;
         #size-cells = <0>;
 
-	/*
+
 	csi0: endpoint@0 {
 		reg = <0>;
 		remote-endpoint = <&adv7180_1>;
 	};
-	*/
+
 };
 
 &ssi2 {
