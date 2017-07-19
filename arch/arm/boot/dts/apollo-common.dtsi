@@ -283,14 +283,14 @@
 		compatible = "adv,adv7180";
 		reg = <0x21>;
 		pinctrl-names = "default";
-		pinctrl-0 = <&pinctrl_ipu1_2>;
+		pinctrl-0 = <&pinctrl_csi>;
 		clocks = <&clks 201>;
 		clock-names = "csi_mclk";
 		DOVDD-supply = <&reg_3p3v>;
 		AVDD-supply = <&reg_1p8v>;
 		DVDD-supply = <&reg_1p8v>;
 		PVDD-supply = <&reg_1p8v>;
-		pwn-gpios = <&gpio5 28 0>;
+		prst-gpios = <&gpio5 29 1>;
 		csi_id = <0>;
 		mclk = <24000000>;
 		mclk_source = <0>;
@@ -715,19 +715,10 @@
 	status = "okay";
 };
 
-/* //!!
-&mipi_csi {
-	ipu_id = <0>;
-	csi_id = <0>;
-	v_channel = <0>;
-	lanes = <2>;
-	status = "okay";
-}; */
 
 &ipu1_csi0 {
 	#address-cells = <1>;
         #size-cells = <0>;
-
 
 	csi0: endpoint@0 {
 		reg = <0>;
