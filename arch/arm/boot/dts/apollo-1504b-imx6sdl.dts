@@ -125,6 +125,11 @@
 	status = "ok";
 };
 
+&mxcfb2 {
+	disp_dev = "hdmi";
+	status = "ok";
+};
+
 &ssi1 {
 	fsl,mode = "i2s-slave";
 	status = "okay";
