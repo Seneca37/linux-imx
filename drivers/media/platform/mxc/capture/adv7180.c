@@ -3,6 +3,14 @@
  */
 
 /*
+ * Modify by Paolo Orsaria <paolo.orsaria@maselettronica.com>
+ *
+ * tested with Ubuntu 16.04 LTS and gst 1.0
+ * $ gst-launch-1.0  imxv4l2videosrc device=/dev/video0 ! deinterlace ! imxipuvideotransform ! imxipuvideosink
+ *
+ */
+
+/*
  * The code contained herein is licensed under the GNU General Public
  * License. You may obtain a copy of the GNU General Public License
  * Version 2 or later at the following locations:
