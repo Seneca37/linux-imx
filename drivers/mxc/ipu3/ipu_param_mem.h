@@ -273,10 +273,10 @@ static inline void _ipu_ch_param_init(struct ipu_soc *ipu, int ch,
 	ipu_ch_param_set_field(&params, 1, 0, 29, addr0 >> 3);
 	ipu_ch_param_set_field(&params, 1, 29, 29, addr1 >> 3);
 	if (addr0%8)
-		dev_warn(ipu->dev,
+		dev_info(ipu->dev,
 			 "IDMAC%d's EBA0 is not 8-byte aligned\n", ch);
 	if (addr1%8)
-		dev_warn(ipu->dev,
+		dev_info(ipu->dev,
 			 "IDMAC%d's EBA1 is not 8-byte aligned\n", ch);
 
 	switch (pixel_fmt) {
