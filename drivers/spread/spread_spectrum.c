@@ -10,8 +10,10 @@
 #include <linux/regmap.h>
 
 #define PLL_528_SS_OFFSET 0x40
-#define ANADIG_PLL_528_SYS_SS_ENABLE 0x8000
+#define PLL_528_NUM_OFFSET 0x50
 #define PLL_528_DENOM_OFFSET 0x60
+#define ANADIG_PLL_528_SYS_SS_ENABLE 0x8000
+
 
 #define ANADIG_DIGPROG 0x260
 
@@ -27,7 +29,7 @@ static int spread_spectrum_set_state(int state) {
   unsigned long denom=0x4B0;
 
   u32 val;
-  u32 ss_val, denom_val;
+  u32 ss_val, num_val, denom_val;
 
   anatop = syscon_regmap_lookup_by_compatible("fsl,imx6q-anatop");
   if (IS_ERR(anatop)) {
@@ -35,22 +37,23 @@ static int spread_spectrum_set_state(int state) {
   }
 
   /* Dump existing registers values */
-  regmap_read(anatop,  PLL_528_SS_OFFSET, &ss_val);
-  regmap_read(anatop,  PLL_528_DENOM_OFFSET, &denom_val);
-  printk("i.MX6 Spread Spectrum initial register values: SS=%x DENOM=%x\n", ss_val, denom_val);
+  regmap_read(anatop, PLL_528_SS_OFFSET, &ss_val);
+  regmap_read(anatop, PLL_528_NUM_OFFSET, &num_val);
+  regmap_read(anatop, PLL_528_DENOM_OFFSET, &denom_val);
+  printk("i.MX6 Spread Spectrum initial register values: SS=%x NUM=%x DENOM=%x\n", ss_val, num_val, denom_val);
 
   /* Disable spread spectrum mode */
-  regmap_read(anatop,  PLL_528_SS_OFFSET, &val );
-  regmap_write(anatop,  PLL_528_SS_OFFSET, val & ~ANADIG_PLL_528_SYS_SS_ENABLE);
+  regmap_read(anatop, PLL_528_SS_OFFSET, &val );
+  regmap_write(anatop, PLL_528_SS_OFFSET, val & ~ANADIG_PLL_528_SYS_SS_ENABLE);
 
   /* Write new values */
-  regmap_write(anatop,PLL_528_SS_OFFSET,sys_ss);
-  regmap_write(anatop,PLL_528_DENOM_OFFSET,denom);
+  regmap_write(anatop, PLL_528_SS_OFFSET,sys_ss);
+  regmap_write(anatop, PLL_528_DENOM_OFFSET,denom);
   
   if (state) {
 
-    regmap_read(anatop,  PLL_528_SS_OFFSET, &val );
-    regmap_write(anatop,  PLL_528_SS_OFFSET, val  | ANADIG_PLL_528_SYS_SS_ENABLE);
+    regmap_read(anatop, PLL_528_SS_OFFSET, &val );
+    regmap_write(anatop, PLL_528_SS_OFFSET, val  | ANADIG_PLL_528_SYS_SS_ENABLE);
     printk("i.MX6 Spread Spectrum enabled\n");
   }
   else {
@@ -58,9 +61,10 @@ static int spread_spectrum_set_state(int state) {
   }
 
 /* Dump final registers values */
-  regmap_read(anatop,  PLL_528_SS_OFFSET, &ss_val);
-  regmap_read(anatop,  PLL_528_DENOM_OFFSET, &denom_val);
-  printk("i.MX6 Spread Spectrum final register values: SS=%x DENOM=%x\n", ss_val, denom_val);
+  regmap_read(anatop, PLL_528_SS_OFFSET, &ss_val);
+  regmap_read(anatop, PLL_528_NUM_OFFSET, &num_val);
+  regmap_read(anatop, PLL_528_DENOM_OFFSET, &denom_val);
+  printk("i.MX6 Spread Spectrum final register values: SS=%x NUM=%x DENOM=%x\n", ss_val, num_val, denom_val);
 
   return 0;
 }

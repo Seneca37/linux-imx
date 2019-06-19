@@ -28,6 +28,7 @@
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
 #include <sound/initval.h>
+#include <linux/proc_fs.h>
 
 #include "sgtl5000.h"
 
@@ -86,7 +87,102 @@ struct sgtl5000_priv {
 	int num_supplies;
 	struct regmap *regmap;
 	struct clk *mclk;
+	int clock_disabled;
 };
+
+static int open_proc(struct inode *inode, struct file *file)
+{
+    return 0;
+}
+ 
+static int release_proc(struct inode *inode, struct file *file)
+{
+    return 0;
+}
+ 
+static ssize_t read_proc(struct file *filp, char __user *buffer, size_t count, loff_t * offset)
+{
+	char data[1];
+	struct sgtl5000_priv *sgtl5000 = PDE_DATA(file_inode(filp));
+
+	/* Check data availability */
+	if (!sgtl5000)
+		return 0;
+
+    /* Check offset */
+    if ((int) (*offset) > 0) {
+        return 0;
+    }
+
+    /* Check length */
+	if (count <= 0)
+		return count;
+
+	/* Prepare data */
+	data[0] = (sgtl5000->clock_disabled ? '1' : '0');
+
+	/* Copy data to user */
+	if (copy_to_user(buffer, data, 1))
+		return 0;
+
+	/* Advance offset */
+	*offset = 1;
+
+	return 1;
+}
+ 
+static ssize_t write_proc(struct file *filp, const char *buffer, size_t count, loff_t * offset)
+{
+	int value;
+	char data[1];
+	struct sgtl5000_priv *sgtl5000 = PDE_DATA(file_inode(filp));
+
+	/* Check data availability */
+	if (!sgtl5000)
+		return -EFAULT;
+
+	/* Check offset */
+    if ((int) (*offset) > 0) {
+        return -EFAULT;
+    }
+
+	/* Check length */
+	if (count <= 0)
+		return -EFAULT;
+
+	if (copy_from_user(data, buffer, 1))
+		return -EFAULT;
+
+	/* Set data */
+	value = (data[0] == '1' ? 1 : 0);
+
+	if(value != sgtl5000->clock_disabled)
+	{
+		sgtl5000->clock_disabled = value;
+
+		/* Perform action */
+		if (sgtl5000->clock_disabled)
+			clk_disable(sgtl5000->mclk);
+		else
+			clk_enable(sgtl5000->mclk);
+	}
+
+	/* Advance offset */
+	*offset = count;
+
+    return count;
+}
+
+static struct file_operations proc_fops = {
+        .open = open_proc,
+        .read = read_proc,
+        .write = write_proc,
+        .release = release_proc
+};
+ 
+
+
+
 
 /*
  * mic_bias power on/off share the same register bits with
@@ -1217,6 +1313,8 @@ static int sgtl5000_i2c_probe(struct i2c_client *client,
 
 	i2c_set_clientdata(client, sgtl5000);
 
+	sgtl5000->clock_disabled = 0;
+	
 	ret = sgtl5000_enable_regulators(client);
 	if (ret)
 		return ret;
@@ -1314,6 +1412,9 @@ static int sgtl5000_i2c_probe(struct i2c_client *client,
 	if (ret)
 		goto disable_clk;
 
+	/* Register proc fs */ 
+	proc_create_data("sgtl5000_clock_disable", 0666, NULL, &proc_fops, sgtl5000);
+
 	return 0;
 
 disable_clk:
@@ -1333,6 +1434,9 @@ static int sgtl5000_i2c_remove(struct i2c_client *client)
 								GFP_KERNEL);
 	if (!sgtl5000)
 		return -ENOMEM;
+
+	/* Unregister proc fs */ 
+	remove_proc_entry("sgtl5000_clock_disable", NULL);
 
 	snd_soc_unregister_codec(&client->dev);
 	clk_disable_unprepare(sgtl5000->mclk);
