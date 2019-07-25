@@ -202,9 +202,9 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_enet>;
 	phy-mode = "rgmii";
-	//phy-reset-gpios = <&gpio1 28 0>;	// let the reset task to U-Boot
-	//phy-reset-duration = <100>;		// or phy won't work correctly!
-	status = "okay";
+	/* phy-reset-gpios = <&gpio1 28 0>;	// let the reset task to U-Boot */
+	/* phy-reset-duration = <100>;		// or phy won't work correctly! */
+	status = "disabled";
 };
 
 &gpc {
@@ -500,8 +500,8 @@
 				MX6QDL_PAD_RGMII_RD2__RGMII_RD2		SILVERBULLET_PAD_CTRL_ENET
 				MX6QDL_PAD_RGMII_RD3__RGMII_RD3		SILVERBULLET_PAD_CTRL_ENET
 				MX6QDL_PAD_RGMII_RX_CTL__RGMII_RX_CTL	SILVERBULLET_PAD_CTRL_ENET
-				MX6QDL_PAD_ENET_RXD1__GPIO1_IO26	SILVERBULLET_PAD_CTRL_ENET	/* RGMII Phy irq */
-				MX6QDL_PAD_ENET_TX_EN__GPIO1_IO28	SILVERBULLET_PAD_CTRL_ENET	/* RGMII reset */
+				MX6QDL_PAD_ENET_RXD1__GPIO1_IO26	SILVERBULLET_PAD_CTRL_ENET	// RGMII Phy irq
+				MX6QDL_PAD_ENET_TX_EN__GPIO1_IO28	SILVERBULLET_PAD_CTRL_ENET	// RGMII reset
 			>;
 		};
 
